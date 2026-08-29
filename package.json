@@ -1,0 +1,24 @@
+{
+  "name": "localafk",
+  "version": "1.0.0",
+  "description": "Self-hosted Discord bot + web dashboard: browse guilds, chat, and hold a voice channel 24/7 until you disconnect it yourself.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "license": "MIT",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "libsodium-wrappers": "^0.8.4",
+    "socket.io": "^4.8.3"
+  }
+}
