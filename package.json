@@ -5,6 +5,24 @@
   "main": "src/index.js",
   "type": "commonjs",
   "license": "MIT",
+  "author": "thuanlyt",
+  "homepage": "https://github.com/thuanlyt/LocalAFK#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thuanlyt/LocalAFK.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thuanlyt/LocalAFK/issues"
+  },
+  "keywords": [
+    "discord",
+    "discord-bot",
+    "discord-voice",
+    "self-hosted",
+    "dashboard",
+    "24-7",
+    "oauth2"
+  ],
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js"
