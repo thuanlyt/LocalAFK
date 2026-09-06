@@ -3,12 +3,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E22.12-brightgreen.svg)](package.json)
 [![CI](https://github.com/thuanlyt/LocalAFK/actions/workflows/ci.yml/badge.svg)](https://github.com/thuanlyt/LocalAFK/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/thuanlyt/LocalAFK)](https://github.com/thuanlyt/LocalAFK/releases/latest)
 
 **English** | [Tiếng Việt](./readme-vi.md)
 
 LocalAFK is a lightweight, headless Discord bot controlled entirely through slash commands. It keeps an authorized bot connected to a voice channel, restores the saved voice target after restart, and exposes operational diagnostics directly in Discord.
 
 There is no dashboard, HTTP server, browser control plane, web login, Docker requirement, database, or reverse-proxy requirement.
+
+**Current stable release:** [v1.0.0](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.0.0)
 
 ## Contents
 
@@ -29,6 +32,7 @@ There is no dashboard, HTTP server, browser control plane, web login, Docker req
 - [Project structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
 - [Limitations](#limitations)
+- [Releases](#releases)
 - [Contributing](#contributing)
 - [License](#license)
 - [Support the Project](#support-the-project)
@@ -114,6 +118,12 @@ Edit .env before starting. On Windows PowerShell, copy the example with:
 
 ~~~powershell
 Copy-Item .env.example .env
+~~~
+
+To pin the checkout to the first stable release instead of the current master branch:
+
+~~~bash
+git checkout v1.0.0
 ~~~
 
 Invite the bot with the bot and applications.commands scopes, then run /afk ping in a guild where your Discord user ID is listed in OWNER_DISCORD_IDS.
@@ -305,6 +315,12 @@ Check Discord gateway connectivity, host/network stability, and voice permission
 - Global command propagation depends on Discord and can be slower than guild registration.
 - Continuous voice presence still depends on Discord, network, host, process supervision, and permissions.
 - Auth/API/frontend tests from the former dashboard are gone with that runtime; command, voice, and persistence behavior are covered by built-in tests.
+
+## Releases
+
+The latest stable version is [v1.0.0](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.0.0).
+
+Release tags are treated as immutable snapshots. The `master` branch may contain documentation or development changes made after the latest release.
 
 ## Contributing
 

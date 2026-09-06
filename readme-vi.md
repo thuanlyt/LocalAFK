@@ -3,12 +3,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E22.12-brightgreen.svg)](package.json)
 [![CI](https://github.com/thuanlyt/LocalAFK/actions/workflows/ci.yml/badge.svg)](https://github.com/thuanlyt/LocalAFK/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/thuanlyt/LocalAFK)](https://github.com/thuanlyt/LocalAFK/releases/latest)
 
 [English](./README.md) | **Tiếng Việt**
 
 LocalAFK là một Discord bot headless, nhẹ, được điều khiển hoàn toàn bằng slash command. Bot giữ kết nối với voice channel cho các owner được cấp quyền, khôi phục voice target đã lưu sau khi restart và hiển thị diagnostics trực tiếp trong Discord.
 
 Dự án không có dashboard, HTTP server, browser control plane, web login, yêu cầu Docker, database hay reverse proxy.
+
+**Bản ổn định hiện tại:** [v1.0.0](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.0.0)
 
 ## Nội dung
 
@@ -29,6 +32,7 @@ Dự án không có dashboard, HTTP server, browser control plane, web login, y�
 - [Cấu trúc dự án](#cấu-trúc-dự-án)
 - [Xử lý sự cố](#xử-lý-sự-cố)
 - [Giới hạn](#giới-hạn)
+- [Releases](#releases)
 - [Đóng góp](#đóng-góp)
 - [Giấy phép](#giấy-phép)
 - [Ủng hộ dự án](#-ủng-hộ-dự-án)
@@ -114,6 +118,12 @@ Hãy chỉnh sửa `.env` trước khi start. Trên Windows PowerShell, copy fil
 
 ~~~powershell
 Copy-Item .env.example .env
+~~~
+
+Để pin checkout vào bản stable đầu tiên thay vì branch master hiện tại:
+
+~~~bash
+git checkout v1.0.0
 ~~~
 
 Invite bot với scope `bot` và `applications.commands`, sau đó chạy `/afk ping` trong guild nơi Discord user ID của bạn đã có trong `OWNER_DISCORD_IDS`.
@@ -305,6 +315,12 @@ Kiểm tra kết nối Discord Gateway, độ ổn định host/network và voic
 - Global command propagation phụ thuộc Discord và có thể chậm hơn guild registration.
 - Voice presence liên tục vẫn phụ thuộc Discord, network, host, process supervision và permission.
 - Auth/API/frontend test của dashboard cũ không còn vì runtime đó đã bị loại bỏ; command, voice và persistence được bao phủ bởi test tích hợp hiện tại.
+
+## Releases
+
+Bản stable mới nhất là [v1.0.0](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.0.0).
+
+Release tag được xem là snapshot bất biến. Branch `master` có thể chứa thay đổi tài liệu hoặc phát triển sau release mới nhất.
 
 ## Đóng góp
 
