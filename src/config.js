@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('node:path');
 
 function list(value) {
   return (value || '')
@@ -9,6 +10,10 @@ function list(value) {
 
 const config = {
   port: parseInt(process.env.PORT, 10) || 3000,
+  host: process.env.HOST || '127.0.0.1',
+  dataDir: process.env.DATA_DIR
+    ? path.resolve(process.env.DATA_DIR)
+    : path.join(__dirname, '..', 'data'),
   botToken: process.env.BOT_TOKEN || '',
   sessionSecret: process.env.SESSION_SECRET || '',
   cookieSecure: process.env.COOKIE_SECURE === 'true',

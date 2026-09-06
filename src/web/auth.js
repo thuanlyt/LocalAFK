@@ -1,3 +1,4 @@
+const crypto = require('node:crypto');
 const express = require('express');
 const config = require('../config');
 
@@ -12,20 +13,29 @@ router.get('/config', (req, res) => {
 
 router.get('/login', (req, res) => {
   if (!config.oauthEnabled) return res.status(404).send('OAuth login chưa được cấu hình.');
+  const state = crypto.randomBytes(24).toString('hex');
+  req.session.oauthState = state;
   const params = new URLSearchParams({
     client_id: config.oauth.clientId,
     redirect_uri: config.oauth.redirectUri,
     response_type: 'code',
     scope: 'identify',
     prompt: 'consent',
+    state,
   });
   res.redirect(`https://discord.com/api/oauth2/authorize?${params.toString()}`);
 });
 
 router.get('/callback', async (req, res) => {
   if (!config.oauthEnabled) return res.status(404).send('OAuth login chưa được cấu hình.');
-  const { code } = req.query;
+  const { code, state } = req.query;
   if (!code) return res.redirect('/?error=missing_code');
+
+  const expectedState = req.session.oauthState;
+  delete req.session.oauthState;
+  if (!state || !expectedState || state !== expectedState) {
+    return res.redirect('/?error=invalid_state');
+  }
 
   try {
     const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
@@ -52,7 +62,7 @@ router.get('/callback', async (req, res) => {
       return res.status(403).send('Tài khoản Discord này không có quyền truy cập dashboard.');
     }
 
-    req.session.user = {
+    const authedUser = {
       id: user.id,
       username: user.username,
       avatar: user.avatar
@@ -60,7 +70,17 @@ router.get('/callback', async (req, res) => {
         : null,
       via: 'oauth',
     };
-    res.redirect('/');
+
+    // Regenerate the session (new ID) before attaching the authenticated user, to
+    // avoid session fixation across the pre-auth -> authenticated transition.
+    req.session.regenerate((err) => {
+      if (err) {
+        console.error('[auth] session regenerate failed:', err.message);
+        return res.redirect('/?error=auth_failed');
+      }
+      req.session.user = authedUser;
+      res.redirect('/');
+    });
   } catch (err) {
     console.error('[auth] OAuth callback failed:', err.message);
     res.redirect('/?error=auth_failed');
@@ -73,8 +93,14 @@ router.post('/password', express.json(), (req, res) => {
   if (password !== config.dashboardPassword) {
     return res.status(401).json({ error: 'invalid_password' });
   }
-  req.session.user = { id: 'dashboard', username: 'Dashboard', avatar: null, via: 'password' };
-  res.json({ ok: true });
+  req.session.regenerate((err) => {
+    if (err) {
+      console.error('[auth] session regenerate failed:', err.message);
+      return res.status(500).json({ error: 'session_error' });
+    }
+    req.session.user = { id: 'dashboard', username: 'Dashboard', avatar: null, via: 'password' };
+    res.json({ ok: true });
+  });
 });
 
 router.post('/logout', (req, res) => {

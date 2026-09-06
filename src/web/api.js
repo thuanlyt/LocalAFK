@@ -62,8 +62,12 @@ function createApiRouter(client, voiceManager) {
   });
 
   router.post('/voice/leave', async (req, res) => {
-    const status = await voiceManager.leave();
-    res.json(status);
+    try {
+      const status = await voiceManager.leave();
+      res.json(status);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   router.get('/voice/channel-members/:channelId', (req, res) => {
