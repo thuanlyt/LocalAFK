@@ -1,7 +1,7 @@
 {
   "name": "localafk",
   "version": "1.0.0",
-  "description": "Self-hosted Discord bot + web dashboard: browse guilds, chat, and hold a voice channel 24/7 until you disconnect it yourself.",
+  "description": "Headless Discord bot controlled by slash commands with persistent voice presence.",
   "main": "src/index.js",
   "type": "commonjs",
   "license": "MIT",
@@ -19,13 +19,13 @@
     "discord-bot",
     "discord-voice",
     "self-hosted",
-    "dashboard",
-    "24-7",
-    "oauth2"
+    "headless",
+    "slash-commands",
+    "24-7"
   ],
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "dev": "node --env-file-if-exists=.env --watch src/index.js",
     "test": "node --test"
   },
   "engines": {
@@ -33,11 +33,6 @@
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
-    "discord.js": "^14.27.0",
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "express-session": "^1.19.0",
-    "memorystore": "^1.6.7",
-    "socket.io": "^4.8.3"
+    "discord.js": "^14.27.0"
   }
 }
