@@ -154,6 +154,26 @@ test('an explicit join cancels a pending reconnect timer instead of stacking ano
   assert.equal(deps.connections.length, 2, 'the cancelled timer must not have fired a second, redundant connect');
 });
 
+test('explicit reconnect preserves the saved target and replaces the active connection', async () => {
+  const guild = makeGuild('g1', [makeVoiceChannel('c1')]);
+  const client = makeClient([guild]);
+  const stateStore = makeMemoryStateStore();
+  const deps = makeVoiceDeps();
+  const vm = new VoiceManager(client, stateStore, { voiceDeps: deps, ...FAST_OPTS });
+
+  await vm.join('g1', 'c1');
+  const connectionA = deps.connections[0];
+  connectionA.setReady();
+
+  const status = await vm.reconnect();
+
+  assert.equal(connectionA.destroyed, true);
+  assert.equal(deps.connections.length, 2);
+  assert.equal(status.channelId, 'c1');
+  assert.equal(vm.reconnectTimer, null);
+  assert.deepEqual(await stateStore.get('desiredVoice'), { guildId: 'g1', channelId: 'c1' });
+});
+
 test('leave clears desired state, cancels timers, and never reconnects', async () => {
   const guild = makeGuild('g1', [makeVoiceChannel('c1')]);
   const client = makeClient([guild]);

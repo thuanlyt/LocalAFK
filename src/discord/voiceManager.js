@@ -45,8 +45,18 @@ class VoiceManager extends EventEmitter {
   status() {
     const guild = this.desired ? this.client.guilds.cache.get(this.desired.guildId) : null;
     const channel = guild && this.desired ? guild.channels.cache.get(this.desired.channelId) : null;
+    const connected = Boolean(this.connection && this.connection.state.status === VoiceConnectionStatus.Ready);
+    const reconnectPending = Boolean(this.reconnectTimer);
     return {
-      connected: Boolean(this.connection && this.connection.state.status === VoiceConnectionStatus.Ready),
+      connected,
+      state: connected
+        ? 'connected'
+        : reconnectPending
+          ? 'reconnecting'
+          : this.desired
+            ? 'disconnected'
+            : 'idle',
+      reconnectPending,
       guildId: this.desired?.guildId ?? null,
       channelId: this.desired?.channelId ?? null,
       guildName: guild?.name ?? null,
@@ -78,6 +88,16 @@ class VoiceManager extends EventEmitter {
     const status = this.status();
     this.emit('status', status);
     return status;
+  }
+
+  /** Owner-initiated reconnect: preserve the desired target and persisted state. */
+  async reconnect() {
+    if (!this.desired) throw new Error('Chưa có voice target để kết nối lại.');
+    if (this.shuttingDown) throw new Error('Voice manager đang tắt.');
+    this.reconnectDelay = this.baseReconnectDelayMs;
+    this._cancelReconnect();
+    this._connect();
+    return this.status();
   }
 
   /**
@@ -231,9 +251,8 @@ class VoiceManager extends EventEmitter {
       if (channel && channel.isVoiceBased()) {
         return [...channel.members.values()].map((m) => ({
           id: m.id,
-          username: m.user.username,
-          avatar: m.user.displayAvatarURL({ size: 64 }),
-          bot: m.user.bot,
+          username: m.displayName || m.user?.globalName || m.user?.username || 'Unknown member',
+          bot: Boolean(m.user?.bot),
         }));
       }
     }
