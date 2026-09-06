@@ -99,7 +99,14 @@ Corrective code HEAD:
 - Status: completed
 - Conclusion: success
 
-The final documentation/audit push must be verified separately. Its run ID and conclusion are recorded in the final handoff result after GitHub Actions completes.
+Final documentation push:
+
+- HEAD: `d0414c4a6d6970a743c268b3841ba93005066de2`
+- Run: `34010970358`
+- Status: completed
+- Conclusion: success
+
+The README and audit report were therefore verified by a green GitHub Actions run after the documentation push.
 
 ## Repository cleanliness
 
