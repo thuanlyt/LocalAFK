@@ -11,10 +11,17 @@ router.get('/config', (req, res) => {
   });
 });
 
-router.get('/login', (req, res) => {
+router.get('/login', async (req, res) => {
   if (!config.oauthEnabled) return res.status(404).send('OAuth login chưa được cấu hình.');
   const state = crypto.randomBytes(24).toString('hex');
   req.session.oauthState = state;
+  try {
+    await saveSession(req);
+  } catch (err) {
+    console.error('[auth] OAuth state session save failed:', err.message);
+    return res.status(500).send('Không thể bắt đầu đăng nhập OAuth.');
+  }
+
   const params = new URLSearchParams({
     client_id: config.oauth.clientId,
     redirect_uri: config.oauth.redirectUri,
@@ -73,34 +80,32 @@ router.get('/callback', async (req, res) => {
 
     // Regenerate the session (new ID) before attaching the authenticated user, to
     // avoid session fixation across the pre-auth -> authenticated transition.
-    req.session.regenerate((err) => {
-      if (err) {
-        console.error('[auth] session regenerate failed:', err.message);
-        return res.redirect('/?error=auth_failed');
-      }
-      req.session.user = authedUser;
-      res.redirect('/');
-    });
+    await regenerateSession(req);
+    req.session.user = authedUser;
+    await saveSession(req);
+    res.redirect('/');
   } catch (err) {
     console.error('[auth] OAuth callback failed:', err.message);
     res.redirect('/?error=auth_failed');
   }
 });
 
-router.post('/password', express.json(), (req, res) => {
+router.post('/password', express.json(), async (req, res) => {
   if (!config.passwordEnabled) return res.status(404).json({ error: 'password_login_disabled' });
   const { password } = req.body || {};
   if (password !== config.dashboardPassword) {
     return res.status(401).json({ error: 'invalid_password' });
   }
-  req.session.regenerate((err) => {
-    if (err) {
-      console.error('[auth] session regenerate failed:', err.message);
-      return res.status(500).json({ error: 'session_error' });
-    }
+
+  try {
+    await regenerateSession(req);
     req.session.user = { id: 'dashboard', username: 'Dashboard', avatar: null, via: 'password' };
+    await saveSession(req);
     res.json({ ok: true });
-  });
+  } catch (err) {
+    console.error('[auth] password session save failed:', err.message);
+    res.status(500).json({ error: 'session_error' });
+  }
 });
 
 router.post('/logout', (req, res) => {
@@ -112,4 +117,16 @@ function requireAuth(req, res, next) {
   res.status(401).json({ error: 'unauthenticated' });
 }
 
-module.exports = { router, requireAuth };
+function saveSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.save((err) => (err ? reject(err) : resolve()));
+  });
+}
+
+function regenerateSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((err) => (err ? reject(err) : resolve()));
+  });
+}
+
+module.exports = { router, requireAuth, saveSession, regenerateSession };
