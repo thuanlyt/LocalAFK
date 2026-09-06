@@ -1,7 +1,8 @@
 # LocalAFK
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D18.17-brightgreen.svg)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg)](package.json)
+[![CI](https://github.com/thuanlyt/LocalAFK/actions/workflows/ci.yml/badge.svg)](https://github.com/thuanlyt/LocalAFK/actions/workflows/ci.yml)
 
 Bảng điều khiển web (self-hosted) cho **Discord Bot** của riêng bạn: đăng nhập, chọn server (guild), chat trực tiếp trong kênh text, và tham gia kênh voice rồi **treo 24/7** — kết nối vẫn duy trì trên server ngay cả khi bạn đóng trình duyệt, cho đến khi bạn tự bấm "Thoát phòng".
 
@@ -9,7 +10,7 @@ Mã nguồn mở, giấy phép MIT.
 
 ## 🚧 Trạng thái dự án
 
-Source đã **hoàn chỉnh và tự deploy được ngay** theo hướng dẫn bên dưới — đã test thật với bot Discord thật, chat và giữ voice ổn định. Bản thân tác giả hiện đang tạm dừng việc tìm VPS Always Free (xem lý do trong mục [Host miễn phí 24/7](#host-miễn-phí-247-không-cần-bật-máy-tính-cá-nhân)) do chưa đủ ngân sách thêm phương thức thanh toán — không ảnh hưởng gì đến việc bạn tự clone và host riêng.
+Source đã **hoàn chỉnh, có test tự động cho phần voice lifecycle, và tự deploy được ngay** theo hướng dẫn bên dưới — đã test thật với bot Discord thật, chat và giữ voice ổn định. Xem [Giới hạn hiện tại](#giới-hạn-hiện-tại) để biết trung thực những gì chưa hoàn thiện.
 
 ## Mục lục
 
@@ -21,7 +22,7 @@ Source đã **hoàn chỉnh và tự deploy được ngay** theo hướng dẫn 
 - [Bước 2 — (Tuỳ chọn) OAuth2](#bước-2--tuỳ-chọn-bật-đăng-nhập-discord-oauth2)
 - [Cài đặt & chạy](#cài-đặt--chạy)
 - [Chạy bằng Docker](#chạy-bằng-docker)
-- [Host miễn phí 24/7](#host-miễn-phí-247-không-cần-bật-máy-tính-cá-nhân)
+- [Host 24/7](#host-247-không-cần-bật-máy-tính-cá-nhân)
 - [Sử dụng](#sử-dụng)
 - [Cấu hình (.env) — tham chiếu đầy đủ](#cấu-hình-env--tham-chiếu-đầy-đủ)
 - [Troubleshooting / FAQ](#troubleshooting--faq)
@@ -58,7 +59,7 @@ Client Discord bot được khởi tạo **một lần khi server khởi động
 
 ## Yêu cầu
 
-- Node.js ≥ 18.17 (khuyến nghị 20+)
+- Node.js ≥ 22.12 (khuyến nghị Node 24 LTS) — bắt buộc vì `@discordjs/voice` (bản đang dùng) yêu cầu tối thiểu Node 22.12.
 - Một Discord Application + Bot (miễn phí, tạo trong vài phút)
 - (Tuỳ chọn) Docker, nếu muốn chạy bằng container
 
@@ -99,6 +100,12 @@ Chạy chế độ dev (tự restart khi sửa code):
 npm run dev
 ```
 
+Chạy test:
+
+```bash
+npm test
+```
+
 ## Chạy bằng Docker
 
 ```bash
@@ -107,16 +114,15 @@ docker compose up -d --build
 
 `restart: unless-stopped` đảm bảo container tự khởi động lại nếu host reboot hoặc app bị crash — kết hợp với việc bot tự join lại kênh voice cũ khi khởi động, đây là cách để có một dịch vụ thực sự "24/7".
 
-## Host miễn phí 24/7 (không cần bật máy tính cá nhân)
+Bên trong container, app luôn bind `HOST=0.0.0.0` (được set sẵn trong `docker-compose.yml`, không cần sửa `.env`), còn cổng publish ra host chỉ mở trên `127.0.0.1:3000` — nghĩa là dashboard **không** lộ thẳng ra Internet, bạn cần tự đặt reverse proxy (Nginx/Caddy...) phía trước nếu muốn truy cập từ ngoài.
 
-> Phần này được viết lại dựa trên **trải nghiệm thật** khi tác giả tự đi tìm VPS free cho chính dự án này — không phải lý thuyết suông.
+## Host 24/7 (không cần bật máy tính cá nhân)
 
-1. **Thiết bị riêng luôn bật** (Raspberry Pi, mini PC, NAS cũ...): chạy bằng Docker hoặc `pm2 start src/index.js`. Toàn quyền kiểm soát, không phụ thuộc bên thứ 3, gần như miễn phí (chỉ tốn tiền điện). **Đây vẫn là hướng chắc ăn nhất** nếu bạn có sẵn thiết bị — không phải xếp hàng chờ đợi ai cả.
-2. **Oracle Cloud Always Free**: gói Ampere (4 OCPU/24GB) **free thật, vĩnh viễn, không có bẫy** — nhưng đây cũng là lý do nó **rất đông người săn**. Ở các region phổ biến (vd. Singapore) capacity có thể **hết sạch liên tục trong nhiều ngày đến vài tuần**, và tài khoản Free Trial mặc định **chỉ được dùng 1 region duy nhất** (muốn đổi region để né chỗ hết hàng phải Upgrade lên Pay-As-You-Go — bản thân việc Upgrade không tốn phí, tài nguyên Always Free vẫn free sau khi upgrade, nhưng bắt buộc phải thêm thẻ thanh toán hợp lệ để xác minh). Nếu kiên nhẫn được thì đây vẫn là VPS free "xịn" nhất hiện có.
-3. **Google Cloud `e2-micro` Always Free**: cũng free thật vĩnh viễn (chỉ ở 3 region: `us-west1`, `us-central1`, `us-east1`), nhưng tại thời điểm viết tài liệu này, nhiều người dùng (kể cả tác giả) gặp lỗi hệ thống **`OR_BACR2_44`** khi tạo billing account lần đầu — lỗi này xảy ra ở phía Google, đổi thẻ/đổi trình duyệt/thử lại đều không giúp được, và cộng đồng báo lỗi đã kéo dài nhiều tháng chưa được vá (xem thảo luận trên [Google Developer forums](https://discuss.google.dev/t/repeated-or-bacr2-44-error-during-gcp-free-trial-billing-activation-no-resolution-despite-months-of-delay/245979)). Nếu bạn không gặp lỗi này thì đây là lựa chọn tốt; nếu gặp thì chỉ còn cách chờ Google tự sửa.
-4. **Dịch vụ "free Discord bot hosting" của bên thứ 3** (nhiều trang quảng cáo 24/7 miễn phí): dễ setup nhất, nhưng bạn phải chia sẻ `BOT_TOKEN` cho một bên thứ 3 không kiểm chứng được — rủi ro token bị lộ/dùng sai mục đích, và độ ổn định/tuổi thọ dịch vụ thường không đảm bảo. Chỉ nên dùng để test nhanh, không khuyến khích cho production.
+Vài hướng phổ biến nếu bạn không muốn giữ máy tính cá nhân luôn bật:
 
-**Tóm lại**: nếu có sẵn thiết bị luôn bật → dùng ngay, khỏi đọc tiếp. Nếu không → thử Oracle trước (kiên nhẫn) hoặc Google (nếu không dính bug), và luôn có thể tự động hoá việc "thử lại định kỳ tới khi có chỗ trống" bằng script scheduled task (Windows Task Scheduler / cron) gọi `oci compute instance launch` hoặc `gcloud compute instances create` lặp lại — dự án này tự chạy theo đúng hướng đó.
+1. **Thiết bị riêng luôn bật** (Raspberry Pi, mini PC, NAS cũ...): chạy bằng Docker hoặc trực tiếp bằng `npm start`/systemd. Toàn quyền kiểm soát, không phụ thuộc bên thứ 3, gần như miễn phí (chỉ tốn tiền điện).
+2. **VPS trả phí hoặc Always-Free của các nhà cung cấp cloud** (Oracle Cloud Ampere Always Free, Google Cloud `e2-micro` Always Free, hoặc bất kỳ VPS Linux nào): triển khai native (Node 24 LTS + systemd) hoặc bằng Docker như hướng dẫn ở trên, đặt sau reverse proxy (Nginx/Caddy) để có HTTPS. Lưu ý các gói Always Free thường đông người dùng nên có thể tạm hết capacity ở một số khu vực/thời điểm — đây là giới hạn của nhà cung cấp, không phải của dự án.
+3. **Dịch vụ "free Discord bot hosting" của bên thứ 3**: dễ setup nhất, nhưng bạn phải chia sẻ `BOT_TOKEN` cho một bên thứ 3 không kiểm chứng được — rủi ro token bị lộ/dùng sai mục đích, độ ổn định thường không đảm bảo. Chỉ nên dùng để test nhanh, không khuyến khích cho production.
 
 ## Sử dụng
 
@@ -139,6 +145,8 @@ docker compose up -d --build
 | `SESSION_SECRET` | ✅ | Chuỗi ngẫu nhiên bất kỳ để ký session cookie. |
 | `COOKIE_SECURE` | Tuỳ chọn | Đặt `true` khi chạy sau HTTPS/reverse proxy thật. Mặc định `false`. |
 | `PORT` | Tuỳ chọn | Cổng web server. Mặc định `3000`. |
+| `HOST` | Tuỳ chọn | Địa chỉ bind của web server. Mặc định `127.0.0.1` — giữ nguyên nếu chạy native sau reverse proxy. `docker-compose.yml` tự override thành `0.0.0.0` bên trong container. |
+| `DATA_DIR` | Tuỳ chọn | Thư mục lưu `state.json` (trạng thái voice để tự khôi phục sau restart). Mặc định `./data` cạnh source. Đặt path tuyệt đối (vd. `/var/lib/localafk`) nếu muốn tách state khỏi thư mục release. |
 
 \* Cần cấu hình **ít nhất một** trong hai: OAuth2 (`DISCORD_CLIENT_ID`+`DISCORD_CLIENT_SECRET`+`DISCORD_REDIRECT_URI`+`OWNER_DISCORD_IDS`) hoặc `DASHBOARD_PASSWORD` — nếu không app sẽ báo lỗi và không khởi động (xem `src/config.js`).
 
@@ -163,9 +171,10 @@ docker compose up -d --build
 
 Trung thực về những gì dự án **chưa** làm, để bạn không bất ngờ:
 
-- **Session dashboard dùng bộ nhớ (in-memory)**: mỗi lần restart server (crash, deploy lại, `docker compose restart`...) thì mọi phiên đăng nhập dashboard bị xoá, cần đăng nhập lại. **Không ảnh hưởng đến bot/voice** — trạng thái voice được lưu riêng vào `data/state.json` và tự khôi phục.
-- **Trang đăng nhập bằng mật khẩu (`/auth/password`) chưa có rate limit**: nếu public dashboard ra Internet, nên dùng mật khẩu đủ mạnh và cân nhắc đặt sau reverse proxy có rate limiting.
-- **Chưa có bộ test tự động.**
+- **Session dashboard dùng store in-memory có tự dọn session hết hạn** (`memorystore`), không phải database bền vững: mỗi lần restart server (crash, deploy lại, `docker compose restart`...) thì mọi phiên đăng nhập dashboard bị xoá, cần đăng nhập lại. **Không ảnh hưởng đến bot/voice** — trạng thái voice được lưu riêng vào `DATA_DIR/state.json` (ghi atomic, xem `src/store/stateStore.js`) và tự khôi phục.
+- **Trang đăng nhập bằng mật khẩu (`/auth/password`) chưa có rate limit ở tầng ứng dụng**: nếu public dashboard ra Internet, khuyến nghị dùng OAuth2 + `OWNER_DISCORD_IDS` làm phương thức chính; nếu vẫn giữ password fallback, nên thêm rate limit ở tầng reverse proxy (vd. `limit_req` của Nginx) chứ không cần thêm dependency vào app.
+- **Nếu saved voice channel không còn hợp lệ khi restart** (channel/guild đã bị xoá hoặc bot bị kick khỏi guild), bot sẽ log rõ và **dừng thử kết nối lại** thay vì lặp vô hạn — trạng thái `desiredVoice` vẫn được giữ nguyên trong state file, bạn cần chủ động bấm join lại một kênh hợp lệ từ dashboard.
+- Test tự động (`npm test`) hiện tập trung vào phần quan trọng nhất — vòng đời kết nối voice (`test/voiceManager.test.js`); các phần khác (auth, API, frontend) chưa có test.
 
 Đóng góp để cải thiện các điểm trên luôn được hoan nghênh — xem mục [Đóng góp](#đóng-góp).
 
@@ -174,6 +183,8 @@ Trung thực về những gì dự án **chưa** làm, để bạn không bất 
 - Không commit file `.env` (đã có trong `.gitignore`).
 - `BOT_TOKEN` cho phép toàn quyền điều khiển bot — coi như mật khẩu, không chia sẻ công khai. Nếu lộ token, vào Developer Portal **Reset Token** ngay.
 - Dashboard chỉ nên public ra Internet khi đã cấu hình `OWNER_DISCORD_IDS` hoặc `DASHBOARD_PASSWORD` đủ mạnh, và nên bật HTTPS (`COOKIE_SECURE=true`) khi có domain/reverse proxy thật.
+- Đăng nhập OAuth2 dùng tham số `state` ngẫu nhiên chống CSRF, và session được regenerate sau khi xác thực thành công (cả OAuth lẫn mật khẩu) để tránh session fixation.
+- Đặt app sau một reverse proxy (Nginx/Caddy) khi public ra Internet: proxy lo TLS + forward HTTP/WebSocket vào `HOST:PORT` (mặc định `127.0.0.1:3000`), app không tự lo HTTPS. `GET /healthz` là endpoint không cần xác thực, dùng cho health check của proxy/service manager.
 - Nguyên tắc chung: bất kỳ file nào chứa khoá/token/thông tin xác thực (SSH key, API key, cookie...) đều không nên commit vào git dù là repo private hay public — kiểm tra `.gitignore` trước khi thêm thư mục/script tự động hoá mới.
 
 ## Đóng góp
@@ -182,7 +193,7 @@ Pull request và issue đều được hoan nghênh. Vài hướng đóng góp c
 
 1. Fork repo, tạo branch riêng cho thay đổi của bạn.
 2. Giữ code style nhất quán với phần còn lại (CommonJS, không thêm dependency nặng nếu không thật cần thiết).
-3. Test thủ công đầy đủ luồng chat + voice trước khi mở PR (dự án chưa có test tự động).
+3. Chạy `npm test` (CI cũng tự chạy trên mọi PR) và test thủ công đầy đủ luồng chat + voice trước khi mở PR — đặc biệt nếu đổi `voiceManager.js`, hãy bổ sung test cho hành vi mới trong `test/voiceManager.test.js`.
 4. Mô tả rõ trong PR: vấn đề gì được giải quyết, đã test như thế nào.
 
 ## License
