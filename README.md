@@ -1,261 +1,310 @@
 # LocalAFK
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg)](package.json)
+[![Node.js](https://img.shields.io/badge/node-%3E22.12-brightgreen.svg)](package.json)
 [![CI](https://github.com/thuanlyt/LocalAFK/actions/workflows/ci.yml/badge.svg)](https://github.com/thuanlyt/LocalAFK/actions/workflows/ci.yml)
 
 **English** | [Tiếng Việt](./readme-vi.md)
 
-LocalAFK is a self-hosted web dashboard for a Discord bot. Use it to browse the bot's guilds, read and send text-channel messages, and keep the bot connected to a voice channel while the server process is running.
+LocalAFK is a lightweight, headless Discord bot controlled entirely through slash commands. It keeps an authorized bot connected to a voice channel, restores the saved voice target after restart, and exposes operational diagnostics directly in Discord.
 
-It uses the official Discord Bot API. It does not automate a personal Discord account or implement a self-bot.
+There is no dashboard, HTTP server, browser control plane, web login, Docker requirement, database, or reverse-proxy requirement.
 
 ## Contents
 
-- [What is LocalAFK?](#what-is-localafk)
-- [Key features](#key-features)
-- [How it works](#how-it-works)
+- [What is LocalAFK](#what-is-localafk)
+- [Why headless](#why-headless)
+- [Features](#features)
+- [Architecture](#architecture)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
-- [Authentication](#authentication)
-- [Voice behavior and persistence](#voice-behavior-and-persistence)
-- [Running locally](#running-locally)
-- [Docker](#docker)
-- [Security notes](#security-notes)
+- [Slash commands](#slash-commands)
+- [Voice persistence](#voice-persistence)
+- [Running on Linux](#running-on-linux)
+- [Running on Windows](#running-on-windows)
+- [Process supervision](#process-supervision)
+- [Security](#security)
 - [Testing](#testing)
 - [Project structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
-- [Current limitations](#current-limitations)
+- [Limitations](#limitations)
 - [Contributing](#contributing)
 - [License](#license)
 - [Support the Project](#support-the-project)
 
-## What is LocalAFK?
+## What is LocalAFK
 
-LocalAFK is a small Node.js service that keeps a Discord bot and its dashboard together in one process. The dashboard is independent of the browser session: closing the tab does not disconnect the bot from Discord.
+LocalAFK runs one Node.js process containing:
 
-The voice manager sends a steady silent Opus stream, handles reconnects with bounded backoff, and stores the requested guild/channel so it can restore the target after a process restart.
+- a Discord.js client for the Gateway and application commands;
+- a CommandManager for slash-command registration, authorization, dispatch, and diagnostics;
+- a VoiceManager for persistent voice presence and reconnect lifecycle;
+- a small atomic JSON StateStore for the desired voice target.
 
-## Key features
+Discord is the user interface and control plane. Only stopping the Node process stops the runtime connection.
 
-- Discord OAuth2 login restricted to configured owner Discord IDs.
-- Optional password login for private or fallback use.
-- Guild and channel browsing through a web dashboard.
-- Recent-message history and real-time text-channel updates.
-- Text-message sending through the bot, with Discord's 2,000-character limit enforced.
-- Voice join, leave, live member updates, and reconnect handling.
-- Atomic persistence of the desired voice target in `DATA_DIR/state.json`.
-- Session-bound OAuth `state` validation and session regeneration after login.
-- `GET /healthz` for process liveness checks.
-- Native Node.js and Docker workflows.
+## Why headless
 
-## How it works
+A Discord-native control plane keeps the runtime small and removes an entire class of web concerns:
 
-```text
-Browser
-  │ REST + Socket.IO
-  ▼
-Express dashboard ── StateStore (DATA_DIR/state.json)
-  │
-  ▼
-Discord.js client ── Discord Gateway / REST / Voice
-```
+- no inbound TCP port;
+- no frontend or browser session;
+- no OAuth web callback or password UI;
+- no HTTP, Socket.IO, TLS, reverse proxy, or Docker layer;
+- fewer dependencies and fewer privileged Discord intents;
+- diagnostics and control remain available in the same Discord environment as the bot.
 
-The Discord client starts once with the required guild, message, message-content, and voice-state intents. Express serves the static dashboard and authenticated API. Socket.IO broadcasts new messages, voice status, voice members, and operational log lines to authenticated dashboard clients.
+For long-running use, run the Node process under the operating system's process supervisor. LocalAFK does not ship a supervisor configuration.
 
-The application has no database or external session service. Sessions use `memorystore` with periodic expiry cleanup and are intentionally in-memory.
+## Features
+
+- One root slash command: /afk.
+- Owner allowlisting through comma-separated OWNER_DISCORD_IDS.
+- Ephemeral control, status, sync, diagnostics, and error responses.
+- Guild-scoped command registration for fast iteration, or global registration for multi-guild use.
+- Startup command synchronization that skips the Discord API write when the schema is already in sync.
+- Voice join, leave, reconnect, status, and member listing.
+- Silent Opus frames to keep the voice connection active.
+- Generation-guarded voice lifecycle with bounded reconnect backoff.
+- Atomic, recoverable persistence of desiredVoice.
+- Safe diagnostics for Node version, uptime, memory, gateway ping, guild count, voice state, and command sync state.
+- Native Node.js environment-file loading; no runtime configuration dependency beyond Node.js and npm.
+
+## Architecture
+
+~~~text
+Discord Gateway + Slash Commands
+              │
+              ▼
+       LocalAFK Node.js process
+              │
+      ┌───────┼────────┐
+      ▼       ▼        ▼
+CommandManager VoiceManager StateStore
+                         │
+                         ▼
+                 DATA_DIR/state.json
+~~~
+
+The bot requests only Guilds and GuildVoiceStates intents. It does not subscribe to message content or message events.
 
 ## Requirements
 
-- Node.js `>=22.12.0`. Node.js 24 LTS is recommended.
-- npm compatible with the Node.js release.
-- A Discord application with a bot token.
-- A server where the bot has access to the guilds/channels you want to manage.
-- Docker is optional.
+- Node.js >=22.12.0; Node.js 24 LTS is recommended.
+- npm compatible with the installed Node.js version.
+- A Discord application and bot token.
+- The bot invited with the bot and applications.commands scopes.
+- Access to the guild and voice channels you want to manage.
+- Connect and Speak permissions in the target voice channel.
 
-When creating the bot, enable **Message Content Intent** in the Discord Developer Portal. Grant the bot at least the channel permissions required for your use case: View Channels, Read Message History, Send Messages, Connect, and Speak.
+LocalAFK does not require Docker, a database, an HTTP port, a web server, or a reverse proxy.
 
 ## Quick start
 
-```bash
+~~~bash
 git clone https://github.com/thuanlyt/LocalAFK.git
 cd LocalAFK
 npm ci
 cp .env.example .env
 npm start
-```
+~~~
 
-On Windows PowerShell, the copy step can be written as:
+Edit .env before starting. On Windows PowerShell, copy the example with:
 
-```powershell
+~~~powershell
 Copy-Item .env.example .env
-```
+~~~
 
-Fill in `.env` before starting the service. Open <http://127.0.0.1:3000> after startup.
+Invite the bot with the bot and applications.commands scopes, then run /afk ping in a guild where your Discord user ID is listed in OWNER_DISCORD_IDS.
 
-At least one login method must be configured: Discord OAuth2 or `DASHBOARD_PASSWORD`.
+For development:
+
+~~~bash
+npm run dev
+~~~
 
 ## Configuration
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `BOT_TOKEN` | Yes | Discord bot token. Treat it as a password. |
-| `SESSION_SECRET` | Yes | Long random value used to sign session cookies. |
-| `DISCORD_CLIENT_ID` | OAuth | Discord application client ID. |
-| `DISCORD_CLIENT_SECRET` | OAuth | Discord application client secret. |
-| `DISCORD_REDIRECT_URI` | OAuth | Exact callback URL registered in the Discord Developer Portal. |
-| `OWNER_DISCORD_IDS` | OAuth | Comma-separated Discord user IDs allowed to use OAuth login. |
-| `DASHBOARD_PASSWORD` | Password | Enables the password login form when non-empty. |
-| `COOKIE_SECURE` | No | Set to `true` when the dashboard is served through HTTPS. Defaults to `false`. |
-| `PORT` | No | Web port. Defaults to `3000`. |
-| `HOST` | No | Bind address. Defaults to `127.0.0.1`. Docker Compose sets it to `0.0.0.0` inside the container. |
-| `DATA_DIR` | No | Directory for `state.json`. Defaults to `./data`. |
+| BOT_TOKEN | Yes | Discord bot token. Treat it as a password. |
+| OWNER_DISCORD_IDS | Yes | Comma-separated Discord user IDs authorized to run /afk. |
+| COMMAND_GUILD_ID | No | Register commands in this one guild. Empty means global registration. |
+| DATA_DIR | No | Directory for state.json. Defaults to ./data. |
 
-The OAuth method is enabled only when all OAuth values and at least one owner ID are present. The service exits at startup if `BOT_TOKEN`, `SESSION_SECRET`, or both login methods are missing.
+The application requires both BOT_TOKEN and at least one owner ID. COMMAND_GUILD_ID is useful during development because guild commands update quickly; global command propagation can take longer.
 
-Generate a session secret with:
+Generate or copy secrets only through a private local .env file. .env is ignored by Git and must never be committed.
 
-```bash
-node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
-```
+## Slash commands
 
-For OAuth, register a callback such as `http://127.0.0.1:3000/auth/callback` or the HTTPS URL used by your reverse proxy. The value must match `DISCORD_REDIRECT_URI` exactly.
+All /afk commands are owner-only. Authorization is checked at runtime against interaction.user.id, and an unauthorized interaction receives an ephemeral response without side effects.
 
-## Authentication
+| Command | Behavior |
+| --- | --- |
+| /afk voice join channel:<voice channel> | Validate the guild/channel, persist the target, and connect or switch voice. |
+| /afk voice leave | Clear the saved target, cancel reconnects, and stop voice. |
+| /afk voice reconnect | Preserve the saved target, dispose the live connection, and reconnect intentionally. |
+| /afk voice status | Show connected/reconnecting state, target, duration, and reconnect state. |
+| /afk voice members | List current voice members with bot markers and clean truncation. |
+| /afk commands status | Show guild/global scope, local count, remote count, and schema sync state. |
+| /afk commands sync | Force command schema synchronization and report the scope and count. |
+| /afk ping | Show gateway ping and process uptime. |
+| /afk status | Show compact bot, gateway, voice, target, and command-scope status. |
+| /afk diagnostics | Show a safe operational snapshot without tokens, secrets, owner IDs, or private paths. |
 
-### Discord OAuth2
+Control and diagnostic responses are ephemeral. Voice command handlers call the public VoiceManager API; they do not duplicate voice lifecycle logic.
 
-The login route creates a cryptographically random, session-bound `state` value and saves the session before redirecting to Discord. The callback rejects missing or mismatched state before exchanging the authorization code, then regenerates and saves the authenticated session before redirecting to the dashboard.
+### Command registration
 
-The callback also checks the returned Discord user ID against `OWNER_DISCORD_IDS`.
+At startup, LocalAFK builds the local /afk schema, fetches remote commands for the configured scope, normalizes relevant fields, and compares them. If they match, registration is a no-op. If they differ, LocalAFK replaces the command set with the local schema.
 
-### Password fallback
+- COMMAND_GUILD_ID set: commands are registered in that guild.
+- COMMAND_GUILD_ID empty: commands are registered globally.
+- /afk commands sync: force a synchronization.
+- /afk commands status: inspect the current comparison without mutating Discord.
 
-When `DASHBOARD_PASSWORD` is set, the dashboard exposes a password login form. A successful password login regenerates and saves the session before returning success.
+The bot does not hot-reload source code. After changing the application, restart the Node process; use /afk commands sync only for command registration.
 
-The password endpoint has no application-level rate limiter. If it is reachable from the Internet, prefer OAuth owner allowlisting and add rate limiting at the reverse-proxy layer.
+## Voice persistence
 
-## Voice behavior and persistence
+- /afk voice join validates a voice-based channel in the interaction guild before persisting it.
+- VoiceManager sends a steady silent Opus stream.
+- Unexpected disconnects reconnect with bounded backoff from 5 seconds up to 60 seconds.
+- Generation guards prevent stale connection events and timers from affecting a replacement connection.
+- /afk voice reconnect preserves desiredVoice while intentionally replacing the live connection.
+- /afk voice leave clears desiredVoice and never reconnects.
+- Process shutdown stops the runtime connection but preserves desiredVoice for the next startup.
+- An invalid saved guild/channel is logged and not retried forever.
 
-- Selecting a voice channel stores it as the desired target and connects the bot.
-- The bot streams silence at a regular Opus frame cadence to keep the voice connection active.
-- Unexpected disconnects use bounded exponential reconnect backoff, starting at 5 seconds and capped at 60 seconds.
-- A channel switch or explicit rejoin disposes the previous connection without allowing stale events to affect the replacement.
-- **Leave** clears the desired target and persisted state, then stops the connection.
-- Process shutdown stops the live connection but preserves the desired target for the next startup.
-- On restore, a deleted channel, missing guild, or non-voice target is logged and not retried indefinitely.
+State is stored atomically in DATA_DIR/state.json. StateStore snapshots overlapping writes, reports a failing write to its caller, keeps later writes usable, and cleans up failed temporary files.
 
-This keeps the bot independent of the browser, but it does not guarantee Discord, network, host, or process availability.
+## Running on Linux
 
-## Running locally
+From the repository directory:
 
-Start the service normally:
-
-```bash
+~~~bash
+npm ci
+cp .env.example .env
+# edit .env with a secure editor
 npm start
-```
+~~~
 
-Run with Node's watch mode during development:
+For a long-running service, use a generic process supervisor such as systemd or another service manager. Keep the .env file private and make DATA_DIR writable by the service account. LocalAFK does not ship a systemd unit or deployment script.
 
-```bash
-npm run dev
-```
+## Running on Windows
 
-The default native bind address is `127.0.0.1`. For an internet-facing setup, terminate HTTPS at a reverse proxy, forward HTTP and WebSocket traffic to the local Node process, and set `COOKIE_SECURE=true`.
+In PowerShell:
 
-The unauthenticated liveness endpoint is:
+~~~powershell
+npm ci
+Copy-Item .env.example .env
+# edit .env
+npm start
+~~~
 
-```text
-GET /healthz
-```
+For unattended use, run the process through Task Scheduler or a trusted Windows service wrapper. LocalAFK does not require a listening port and does not need a desktop session after the process starts.
 
-It returns HTTP 200 with `{ "ok": true }` when the web process is alive. It intentionally does not fail merely because Discord or voice is reconnecting.
+## Process supervision
 
-## Docker
+LocalAFK handles SIGTERM and SIGINT by stopping VoiceManager, destroying the Discord client, and exiting. An operating-system supervisor is responsible for restarting the process after a crash or host restart.
 
-```bash
-docker compose up -d --build
-```
+Process supervision is optional for local development and recommended for unattended use. Do not add source hot-reload to a running production process; restart the process after code changes.
 
-The image uses Node 24 and installs from the lockfile with `npm ci --omit=dev`. Compose mounts `./data` at `/app/data`, sets `HOST=0.0.0.0` inside the container, and publishes the dashboard only on the host loopback address `127.0.0.1:3000`.
+## Security
 
-Use a reverse proxy for public HTTPS access. Update `DISCORD_REDIRECT_URI` to the public callback URL and set `COOKIE_SECURE=true` when TLS is enabled. Do not bake `.env` or secrets into the image.
-
-## Security notes
-
-- Never commit `.env`, bot tokens, client secrets, session secrets, or dashboard passwords.
+- Never commit .env or expose BOT_TOKEN.
 - Reset the bot token immediately if it is exposed.
-- Use a strong random `SESSION_SECRET` and a strong password if password login is enabled.
-- Use OAuth2 with `OWNER_DISCORD_IDS` as the preferred public login method.
-- Put a public deployment behind HTTPS and a reverse proxy; keep native Node deployments bound to loopback.
-- Keep the host-published Docker port on loopback unless direct exposure is intentional and understood.
-- LocalAFK uses a Discord bot account. Do not use it to automate a personal Discord account.
+- Keep OWNER_DISCORD_IDS limited to trusted Discord user IDs.
+- Runtime authorization is the final authority; roles and Discord permission metadata do not replace the owner-ID check.
+- All control and diagnostics responses are ephemeral.
+- The bot requests only Guilds and GuildVoiceStates; it does not request Message Content Intent.
+- Grant only the Discord permissions needed for the target guild and voice channel.
+- LocalAFK controls a bot account. It must not be used to automate a personal Discord account.
 
 ## Testing
 
-Run the built-in Node.js test suite:
+Run the built-in Node.js suite:
 
-```bash
+~~~bash
 npm test
-```
+~~~
 
-The tests cover the voice lifecycle and StateStore persistence, including channel replacement, reconnect behavior, shutdown/leave semantics, overlapping snapshots, failed-write recovery, malformed JSON, and temporary-file cleanup.
+The tests cover:
 
-The repository's GitHub Actions workflow runs `npm ci` and `npm test` on Node 24 for pushes and pull requests targeting `master`.
+- command authorization, owner dispatch, safe errors, and ephemeral replies;
+- voice join, leave, reconnect, status, invalid-channel handling, and command errors;
+- guild/global command registration;
+- stable command-schema comparison and startup no-op behavior;
+- VoiceManager generation lifecycle and reconnect regression cases;
+- StateStore atomic persistence, overlapping snapshots, queue recovery, malformed JSON, and temporary-file cleanup.
 
-Additional local checks:
+Additional checks:
 
-```bash
+~~~bash
+npm ci
 npm audit --omit=dev
-node -e "console.log(require('node:crypto').getCiphers().includes('aes-256-gcm'))"
-```
+npm ls --depth=0
+~~~
+
+GitHub Actions runs npm ci and npm test on Node 24 for pushes and pull requests targeting master.
 
 ## Project structure
 
-```text
+~~~text
 src/
-  config.js                 Environment configuration and startup checks
-  index.js                  Process startup and graceful shutdown
-  discord/                  Discord client, chat, voice, and silence stream
-  store/stateStore.js       Atomic JSON state persistence
-  web/                      Express auth/API/server and Socket.IO wiring
-public/                     Static dashboard
-test/                       Built-in node:test suites
-audit/                      Historical review and remediation records
-Dockerfile                  Node 24 production image
-docker-compose.yml          Local container workflow
-```
+  config.js                   Minimal environment contract
+  index.js                    Startup, command sync, restore, and shutdown
+  discord/
+    client.js                 Discord client and minimal intents
+    commandManager.js         Slash commands, authorization, sync, diagnostics
+    silenceStream.js          Silent Opus frame stream
+    voiceManager.js           Persistent voice lifecycle
+  store/stateStore.js         Atomic JSON persistence
+test/
+  commandManager.test.js
+  stateStore.test.js
+  voiceManager.test.js
+audit/                         Historical review and completion reports
+~~~
 
 ## Troubleshooting
 
-### The bot refuses to start with an intents error
+### Commands do not appear
 
-Enable **Message Content Intent** in the Discord Developer Portal and verify the bot was invited with the required permissions.
+Check that the bot was invited with the applications.commands scope and that BOT_TOKEN is valid. Set COMMAND_GUILD_ID to the test guild for fast registration, restart the process, or run /afk commands sync.
 
-### OAuth redirects fail
+Global commands can take longer to propagate than guild commands.
 
-Check that `DISCORD_REDIRECT_URI` exactly matches a registered Discord OAuth2 redirect, including scheme, hostname, port, path, and trailing slash.
+### I am rejected as unauthorized
 
-### The dashboard logs out after a restart
+Copy your Discord user ID and add it to OWNER_DISCORD_IDS as a comma-separated value. Restart the process after changing .env.
 
-This is expected. Sessions are stored in memory and are not persisted across process restarts. Log in again; the voice target is stored separately under `DATA_DIR`.
+### The bot cannot join voice
 
-### The bot cannot reconnect to the saved voice channel
+Verify that the selected channel is a voice or stage channel and that the bot has Connect and Speak permissions. The command must be used inside the target guild.
 
-Check that the bot is still in the guild, the channel still exists and is voice-based, and the bot still has Connect and Speak permissions. An invalid saved target is logged and must be replaced by joining a valid channel from the dashboard.
+### The saved voice target is invalid after restart
 
-### The port is already in use
+Check that the guild and channel still exist, the bot is still a member of the guild, and permissions remain available. Join a valid channel again to replace the saved target.
 
-Change `PORT` or stop the process that owns the configured port. `HOST` controls the bind address separately.
+### The process exits during startup
 
-## Current limitations
+Check the console output for missing BOT_TOKEN, missing OWNER_DISCORD_IDS, invalid command guild access, Discord login errors, or command registration errors.
 
-- `memorystore` is intentionally in-memory. Sessions disappear when the process restarts and do not support multi-process deployments.
-- Password login has no built-in brute-force limiter. Use OAuth owner allowlisting and reverse-proxy rate limiting when appropriate.
-- Auth, API, and frontend behavior have less automated coverage than the voice and persistence subsystems.
-- A saved voice target is retained when it becomes invalid; LocalAFK does not automatically delete it because the owner may want to repair the guild/channel and retry.
-- Continuous voice presence still depends on the Discord gateway, network, host, process manager, and permissions.
+### Voice reconnects repeatedly
+
+Check Discord gateway connectivity, host/network stability, and voice permissions. /afk voice status and /afk diagnostics expose the current state without requiring shell access.
+
+## Limitations
+
+- Sessions and web authentication do not exist; control is limited to Discord slash commands.
+- One process owns the bot and its voice connection. Multi-process coordination is not implemented.
+- desiredVoice is retained when its guild/channel becomes invalid; it is not silently deleted.
+- Global command propagation depends on Discord and can be slower than guild registration.
+- Continuous voice presence still depends on Discord, network, host, process supervision, and permissions.
+- Auth/API/frontend tests from the former dashboard are gone with that runtime; command, voice, and persistence behavior are covered by built-in tests.
 
 ## Contributing
 
@@ -263,11 +312,11 @@ Issues and pull requests are welcome.
 
 Before opening a pull request:
 
-- keep the CommonJS and small-dependency approach unless there is a clear reason to change it;
-- run `npm ci` and `npm test`;
-- update tests when changing voice lifecycle or persistence behavior;
-- describe the change and verification performed;
-- do not include secrets, local state, or deployment credentials.
+- keep the runtime small and the direct dependency set minimal;
+- run npm ci, npm test, and npm audit --omit=dev;
+- add tests for command authorization, command synchronization, voice lifecycle, or persistence changes;
+- do not add web, Docker, database, or hot-reload infrastructure without a separately agreed feature;
+- never include tokens, .env, local state, or deployment credentials.
 
 ## License
 

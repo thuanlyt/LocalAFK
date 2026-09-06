@@ -1,273 +1,322 @@
 # LocalAFK
 
-[![Giấy phép: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg)](package.json)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E22.12-brightgreen.svg)](package.json)
 [![CI](https://github.com/thuanlyt/LocalAFK/actions/workflows/ci.yml/badge.svg)](https://github.com/thuanlyt/LocalAFK/actions/workflows/ci.yml)
 
 [English](./README.md) | **Tiếng Việt**
 
-LocalAFK là dashboard web tự host cho Discord bot. Bạn có thể dùng dashboard để xem các guild của bot, đọc và gửi tin nhắn trong kênh text, đồng thời giữ bot kết nối với một kênh voice trong thời gian tiến trình server còn chạy.
+LocalAFK là một Discord bot headless, nhẹ, được điều khiển hoàn toàn bằng slash command. Bot giữ kết nối với voice channel cho các owner được cấp quyền, khôi phục voice target đã lưu sau khi restart và hiển thị diagnostics trực tiếp trong Discord.
 
-Dự án sử dụng Discord Bot API chính thức. LocalAFK không tự động hóa tài khoản Discord cá nhân và không phải self-bot.
+Dự án không có dashboard, HTTP server, browser control plane, web login, yêu cầu Docker, database hay reverse proxy.
 
 ## Nội dung
 
-- [LocalAFK là gì?](#localafk-là-gì)
-- [Tính năng chính](#tính-năng-chính)
-- [Cách hoạt động](#cách-hoạt-động)
+- [LocalAFK là gì](#localafk-là-gì)
+- [Vì sao headless](#vì-sao-headless)
+- [Tính năng](#tính-năng)
+- [Kiến trúc](#kiến-trúc)
 - [Yêu cầu](#yêu-cầu)
 - [Cài đặt nhanh](#cài-đặt-nhanh)
 - [Cấu hình](#cấu-hình)
-- [Xác thực](#xác-thực)
-- [Hành vi và lưu trạng thái voice](#hành-vi-và-lưu-trạng-thái-voice)
-- [Chạy local](#chạy-local)
-- [Docker](#docker)
-- [Lưu ý bảo mật](#lưu-ý-bảo-mật)
+- [Slash command](#slash-command)
+- [Lưu trạng thái voice](#lưu-trạng-thái-voice)
+- [Chạy trên Linux](#chạy-trên-linux)
+- [Chạy trên Windows](#chạy-trên-windows)
+- [Process supervision](#process-supervision)
+- [Bảo mật](#bảo-mật)
 - [Kiểm thử](#kiểm-thử)
 - [Cấu trúc dự án](#cấu-trúc-dự-án)
 - [Xử lý sự cố](#xử-lý-sự-cố)
-- [Giới hạn hiện tại](#giới-hạn-hiện-tại)
+- [Giới hạn](#giới-hạn)
 - [Đóng góp](#đóng-góp)
 - [Giấy phép](#giấy-phép)
 - [Ủng hộ dự án](#-ủng-hộ-dự-án)
 
-## LocalAFK là gì?
+## LocalAFK là gì
 
-LocalAFK là một service Node.js nhỏ gọn, chạy Discord bot và dashboard trong cùng một tiến trình. Dashboard độc lập với trình duyệt: đóng tab không làm bot ngắt kết nối khỏi Discord.
+LocalAFK chạy trong một process Node.js gồm:
 
-Voice manager gửi một luồng Opus im lặng đều đặn, xử lý reconnect với backoff có giới hạn, và lưu guild/channel được yêu cầu để có thể khôi phục sau khi tiến trình restart.
+- Discord.js client cho Gateway và application commands;
+- CommandManager để đăng ký slash command, kiểm tra quyền, dispatch và cung cấp diagnostics;
+- VoiceManager để duy trì voice presence và lifecycle reconnect;
+- StateStore JSON nhỏ, ghi atomic, lưu voice target mong muốn.
 
-## Tính năng chính
+Discord là giao diện và control plane của bot. Chỉ việc dừng process Node.js mới dừng runtime connection.
 
-- Đăng nhập Discord OAuth2, giới hạn theo Discord user ID được cấu hình.
-- Đăng nhập bằng mật khẩu tùy chọn để dùng private hoặc làm phương án dự phòng.
-- Xem danh sách guild và channel qua dashboard web.
-- Xem tin nhắn gần đây và nhận cập nhật kênh text theo thời gian thực.
-- Gửi tin nhắn qua bot, có giới hạn 2.000 ký tự của Discord.
-- Join, leave voice, cập nhật thành viên trực tiếp và tự reconnect.
-- Lưu atomic voice target mong muốn trong `DATA_DIR/state.json`.
-- Kiểm tra OAuth `state` gắn với session và regenerate session sau đăng nhập.
-- `GET /healthz` để kiểm tra process còn sống.
-- Hỗ trợ chạy bằng Node.js hoặc Docker.
+## Vì sao headless
 
-## Cách hoạt động
+Control plane native trong Discord giúp runtime nhỏ hơn và loại bỏ một lớp web hoàn chỉnh:
 
-```text
-Trình duyệt
-  │ REST + Socket.IO
-  ▼
-Express dashboard ── StateStore (DATA_DIR/state.json)
-  │
-  ▼
-Discord.js client ── Discord Gateway / REST / Voice
-```
+- không mở inbound TCP port;
+- không có frontend hoặc browser session;
+- không có OAuth web callback hoặc password UI;
+- không có HTTP, Socket.IO, TLS, reverse proxy hoặc Docker layer;
+- ít dependency hơn và ít Discord intent đặc quyền hơn;
+- diagnostics và điều khiển vẫn ở ngay trong Discord nơi bot hoạt động.
 
-Discord client khởi động một lần với các intent cần thiết cho guild, message, message content và voice state. Express phục vụ dashboard tĩnh và API có xác thực. Socket.IO gửi message mới, voice status, danh sách thành viên voice và log vận hành tới các dashboard client đã đăng nhập.
+Khi chạy lâu dài, hãy dùng process supervisor của hệ điều hành. LocalAFK không đóng gói sẵn cấu hình supervisor.
 
-Ứng dụng không dùng database hoặc dịch vụ session bên ngoài. Session dùng `memorystore` với cơ chế dọn session hết hạn định kỳ và được chủ ý lưu trong memory.
+## Tính năng
+
+- Một root slash command: /afk.
+- Allowlist owner qua OWNER_DISCORD_IDS, phân tách bằng dấu phẩy.
+- Response ephemeral cho control, status, sync, diagnostics và lỗi.
+- Đăng ký command theo guild để thử nghiệm nhanh hoặc global cho nhiều guild.
+- Startup command sync chỉ ghi lên Discord khi schema thực sự khác.
+- Join, leave, reconnect, status và liệt kê thành viên voice.
+- Silent Opus frames để duy trì voice connection.
+- Voice lifecycle có generation guard và reconnect backoff giới hạn.
+- Ghi desiredVoice atomic, có khả năng phục hồi sau lỗi ghi.
+- Diagnostics an toàn cho Node version, uptime, memory, gateway ping, số guild, voice state và command sync state.
+- Đọc file môi trường bằng Node.js native, không cần dependency runtime ngoài Node.js và npm.
+
+## Kiến trúc
+
+~~~text
+Discord Gateway + Slash Commands
+              │
+              ▼
+       LocalAFK Node.js process
+              │
+      ┌───────┼────────┐
+      ▼       ▼        ▼
+CommandManager VoiceManager StateStore
+                         │
+                         ▼
+                 DATA_DIR/state.json
+~~~
+
+Bot chỉ yêu cầu hai intent `Guilds` và `GuildVoiceStates`. Bot không subscribe message content hoặc message events.
 
 ## Yêu cầu
 
-- Node.js `>=22.12.0`. Khuyến nghị Node.js 24 LTS.
-- npm tương thích với bản Node.js đang dùng.
-- Một Discord application có bot token.
-- Một server nơi bot có quyền truy cập các guild/channel cần quản lý.
-- Docker là tùy chọn.
+- Node.js >=22.12.0; khuyến nghị Node.js 24 LTS.
+- npm tương thích với Node.js đang cài.
+- Một Discord application và bot token.
+- Bot được invite với scope `bot` và `applications.commands`.
+- Quyền truy cập guild và voice channel cần quản lý.
+- Quyền Connect và Speak trong voice channel mục tiêu.
 
-Khi tạo bot, hãy bật **Message Content Intent** trong Discord Developer Portal. Cấp cho bot tối thiểu các quyền phù hợp với nhu cầu: View Channels, Read Message History, Send Messages, Connect và Speak.
+LocalAFK không cần Docker, database, HTTP port, web server hoặc reverse proxy.
 
 ## Cài đặt nhanh
 
-```bash
+~~~bash
 git clone https://github.com/thuanlyt/LocalAFK.git
 cd LocalAFK
 npm ci
 cp .env.example .env
 npm start
-```
+~~~
 
-Trên Windows PowerShell, có thể copy file bằng:
+Hãy chỉnh sửa `.env` trước khi start. Trên Windows PowerShell, copy file mẫu bằng:
 
-```powershell
+~~~powershell
 Copy-Item .env.example .env
-```
+~~~
 
-Điền `.env` trước khi khởi động service. Sau khi chạy, mở <http://127.0.0.1:3000>.
+Invite bot với scope `bot` và `applications.commands`, sau đó chạy `/afk ping` trong guild nơi Discord user ID của bạn đã có trong `OWNER_DISCORD_IDS`.
 
-Phải cấu hình ít nhất một phương thức đăng nhập: Discord OAuth2 hoặc `DASHBOARD_PASSWORD`.
+Khi phát triển:
+
+~~~bash
+npm run dev
+~~~
 
 ## Cấu hình
 
 | Biến | Bắt buộc | Mô tả |
 | --- | --- | --- |
-| `BOT_TOKEN` | Có | Token Discord bot. Hãy coi đây là mật khẩu. |
-| `SESSION_SECRET` | Có | Giá trị random dài dùng để ký session cookie. |
-| `DISCORD_CLIENT_ID` | OAuth | Client ID của Discord application. |
-| `DISCORD_CLIENT_SECRET` | OAuth | Client secret của Discord application. |
-| `DISCORD_REDIRECT_URI` | OAuth | URL callback chính xác đã đăng ký trong Discord Developer Portal. |
-| `OWNER_DISCORD_IDS` | OAuth | Danh sách Discord user ID được phép đăng nhập OAuth, phân cách bằng dấu phẩy. |
-| `DASHBOARD_PASSWORD` | Mật khẩu | Bật form đăng nhập mật khẩu khi có giá trị. |
-| `COOKIE_SECURE` | Không | Đặt `true` khi dashboard chạy qua HTTPS. Mặc định là `false`. |
-| `PORT` | Không | Cổng web. Mặc định `3000`. |
-| `HOST` | Không | Địa chỉ bind. Mặc định `127.0.0.1`. Docker Compose đặt thành `0.0.0.0` bên trong container. |
-| `DATA_DIR` | Không | Thư mục chứa `state.json`. Mặc định `./data`. |
+| BOT_TOKEN | Có | Discord bot token. Hãy bảo vệ như password. |
+| OWNER_DISCORD_IDS | Có | Danh sách Discord user ID được phép chạy `/afk`, phân tách bằng dấu phẩy. |
+| COMMAND_GUILD_ID | Không | Đăng ký command trong một guild này. Để trống nghĩa là global registration. |
+| DATA_DIR | Không | Thư mục chứa `state.json`. Mặc định là `./data`. |
 
-OAuth chỉ được bật khi có đủ các giá trị OAuth và ít nhất một owner ID. Service sẽ thoát ngay lúc khởi động nếu thiếu `BOT_TOKEN`, `SESSION_SECRET`, hoặc không có phương thức đăng nhập nào.
+Ứng dụng yêu cầu cả `BOT_TOKEN` và ít nhất một owner ID. `COMMAND_GUILD_ID` hữu ích khi phát triển vì guild command cập nhật nhanh hơn; global command có thể cần thời gian propagate.
 
-Tạo session secret bằng:
+Chỉ tạo hoặc copy secret trong file `.env` local, giữ file này riêng tư. `.env` đã được Git ignore và tuyệt đối không được commit.
 
-```bash
-node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
-```
+## Slash command
 
-Với OAuth, đăng ký callback như `http://127.0.0.1:3000/auth/callback` hoặc URL HTTPS mà reverse proxy sử dụng. Giá trị này phải khớp chính xác với `DISCORD_REDIRECT_URI`.
+Tất cả `/afk` command chỉ dành cho owner. Quyền được kiểm tra runtime bằng `interaction.user.id`; interaction không được phép nhận response ephemeral và không gây side effect.
 
-## Xác thực
+| Command | Hành vi |
+| --- | --- |
+| `/afk voice join channel:<voice channel>` | Validate guild/channel, lưu target và connect hoặc chuyển voice. |
+| `/afk voice leave` | Xóa target đã lưu, hủy reconnect và dừng voice. |
+| `/afk voice reconnect` | Giữ target đã lưu, dispose connection hiện tại và reconnect có chủ đích. |
+| `/afk voice status` | Hiển thị state connected/reconnecting, target, duration và reconnect state. |
+| `/afk voice members` | Liệt kê thành viên voice hiện tại, đánh dấu bot và tự cắt nội dung dài. |
+| `/afk commands status` | Hiển thị scope guild/global, local count, remote count và schema sync state. |
+| `/afk commands sync` | Buộc đồng bộ schema command và báo scope/count. |
+| `/afk ping` | Hiển thị gateway ping và process uptime. |
+| `/afk status` | Hiển thị tóm tắt bot, gateway, voice, target và command scope. |
+| `/afk diagnostics` | Hiển thị operational snapshot an toàn, không có token, secret, owner ID hoặc private path. |
 
-### Discord OAuth2
+Response điều khiển và diagnostics đều là ephemeral. Handler voice gọi public API của VoiceManager, không sao chép voice lifecycle logic.
 
-Route login tạo một giá trị `state` random bằng cryptography, gắn với session và lưu session trước khi redirect sang Discord. Callback từ chối state bị thiếu hoặc không khớp trước khi đổi authorization code, sau đó regenerate và save authenticated session rồi mới redirect về dashboard.
+### Đăng ký command
 
-Callback cũng kiểm tra Discord user ID nhận được với danh sách `OWNER_DISCORD_IDS`.
+Khi startup, LocalAFK build schema `/afk` local, fetch command remote trong scope đã cấu hình, normalize các field liên quan rồi compare. Nếu giống nhau, đăng ký là no-op. Nếu khác, LocalAFK replace command set bằng schema local.
 
-### Mật khẩu dự phòng
+- Có `COMMAND_GUILD_ID`: đăng ký command trong guild đó.
+- `COMMAND_GUILD_ID` trống: đăng ký command global.
+- `/afk commands sync`: buộc đồng bộ.
+- `/afk commands status`: xem kết quả so sánh hiện tại mà không mutate Discord.
 
-Khi đặt `DASHBOARD_PASSWORD`, dashboard sẽ hiển thị form đăng nhập bằng mật khẩu. Đăng nhập thành công sẽ regenerate và save session trước khi trả về thành công.
+Bot không hot-reload source code. Sau khi đổi application, hãy restart process Node.js; chỉ dùng `/afk commands sync` cho việc đăng ký command.
 
-Endpoint mật khẩu chưa có rate limiter ở tầng ứng dụng. Nếu mở ra Internet, nên ưu tiên OAuth với owner allowlist và thêm rate limit ở reverse proxy.
+## Lưu trạng thái voice
 
-## Hành vi và lưu trạng thái voice
+- `/afk voice join` kiểm tra channel voice/stage trong guild của interaction trước khi lưu.
+- VoiceManager gửi silent Opus stream ổn định.
+- Disconnect bất ngờ sẽ reconnect với backoff giới hạn từ 5 giây đến 60 giây.
+- Generation guard ngăn event và timer cũ ảnh hưởng connection mới.
+- `/afk voice reconnect` giữ desiredVoice và chủ động thay connection hiện tại.
+- `/afk voice leave` xóa desiredVoice và không reconnect.
+- Shutdown process dừng runtime connection nhưng giữ desiredVoice cho startup sau.
+- Guild/channel đã lưu nhưng không còn hợp lệ sẽ được log và không retry vô hạn.
 
-- Chọn một kênh voice sẽ lưu target mong muốn và kết nối bot.
-- Bot phát các frame Opus im lặng đều đặn để giữ connection voice hoạt động.
-- Disconnect bất ngờ dùng exponential reconnect backoff có giới hạn, bắt đầu từ 5 giây và tối đa 60 giây.
-- Khi đổi kênh hoặc join lại, connection cũ được dispose mà event cũ không thể làm thay đổi connection mới.
-- **Leave** xóa target mong muốn và state đã lưu, sau đó dừng connection.
-- Khi process shutdown, connection đang chạy được dừng nhưng target mong muốn được giữ lại để startup lần sau khôi phục.
-- Khi restore, guild đã mất, channel đã xóa hoặc target không phải voice sẽ được ghi log và không bị retry vô hạn.
+State được ghi atomic vào `DATA_DIR/state.json`. StateStore snapshot các write chồng lấp, báo lỗi ghi cho caller, vẫn cho phép write tiếp theo và dọn temporary file lỗi.
 
-Cơ chế này giúp bot độc lập với trình duyệt, nhưng không đảm bảo Discord, network, host hoặc process luôn sẵn sàng.
+## Chạy trên Linux
 
-## Chạy local
+Từ thư mục repository:
 
-Khởi động service bình thường:
-
-```bash
+~~~bash
+npm ci
+cp .env.example .env
+# chỉnh sửa .env bằng editor an toàn
 npm start
-```
+~~~
 
-Trong lúc phát triển, dùng Node watch mode:
+Để chạy lâu dài, dùng process supervisor chung như systemd hoặc service manager khác. Đảm bảo `.env` riêng tư và service account có quyền ghi `DATA_DIR`. LocalAFK không cung cấp systemd unit hoặc deployment script.
 
-```bash
-npm run dev
-```
+## Chạy trên Windows
 
-Địa chỉ bind mặc định khi chạy native là `127.0.0.1`. Nếu public service, hãy terminate HTTPS ở reverse proxy, forward cả HTTP và WebSocket tới Node process local, và đặt `COOKIE_SECURE=true`.
+Trong PowerShell:
 
-Endpoint liveness không yêu cầu đăng nhập:
+~~~powershell
+npm ci
+Copy-Item .env.example .env
+# chỉnh sửa .env
+npm start
+~~~
 
-```text
-GET /healthz
-```
+Khi chạy unattended, dùng Task Scheduler hoặc Windows service wrapper đáng tin cậy. LocalAFK không cần listening port và không cần desktop session sau khi process đã start.
 
-Endpoint trả HTTP 200 với `{ "ok": true }` khi web process còn sống. Nó cố ý không fail chỉ vì Discord hoặc voice đang reconnect.
+## Process supervision
 
-## Docker
+LocalAFK xử lý SIGTERM và SIGINT bằng cách dừng VoiceManager, destroy Discord client rồi thoát. Process supervisor của hệ điều hành chịu trách nhiệm restart sau crash hoặc host restart.
 
-```bash
-docker compose up -d --build
-```
+Process supervision là tùy chọn khi phát triển local và được khuyến nghị khi chạy unattended. Không thêm hot-reload source vào process production; hãy restart process sau khi đổi code.
 
-Image dùng Node 24 và cài dependency từ lockfile bằng `npm ci --omit=dev`. Compose mount `./data` vào `/app/data`, đặt `HOST=0.0.0.0` bên trong container và chỉ publish dashboard trên loopback của host tại `127.0.0.1:3000`.
+## Bảo mật
 
-Dùng reverse proxy cho public HTTPS. Cập nhật `DISCORD_REDIRECT_URI` thành callback URL public và đặt `COOKIE_SECURE=true` khi bật TLS. Không bake `.env` hoặc secret vào image.
-
-## Lưu ý bảo mật
-
-- Không commit `.env`, bot token, client secret, session secret hoặc dashboard password.
-- Nếu bot token bị lộ, hãy reset token ngay.
-- Dùng `SESSION_SECRET` random mạnh và mật khẩu đủ mạnh nếu bật password login.
-- Ưu tiên OAuth2 với `OWNER_DISCORD_IDS` khi public dashboard.
-- Public deployment nên chạy sau HTTPS và reverse proxy; native Node nên bind loopback.
-- Giữ Docker host-published port ở loopback trừ khi bạn hiểu rõ và chủ ý public trực tiếp.
-- LocalAFK dùng bot account Discord. Không dùng dự án để tự động hóa tài khoản Discord cá nhân.
+- Không commit `.env` hoặc làm lộ `BOT_TOKEN`.
+- Reset bot token ngay nếu bị lộ.
+- Chỉ đưa Discord user ID đáng tin vào `OWNER_DISCORD_IDS`.
+- Runtime authorization là authority cuối cùng; role và Discord permission metadata không thay thế owner-ID check.
+- Mọi response điều khiển và diagnostics đều là ephemeral.
+- Bot chỉ yêu cầu `Guilds` và `GuildVoiceStates`; không yêu cầu Message Content Intent.
+- Chỉ cấp Discord permission cần thiết cho guild và voice channel.
+- LocalAFK điều khiển bot account, không được dùng để tự động hóa personal Discord account.
 
 ## Kiểm thử
 
-Chạy built-in Node.js test suite:
+Chạy bộ test Node.js tích hợp:
 
-```bash
+~~~bash
 npm test
-```
+~~~
 
-Test bao phủ voice lifecycle và StateStore persistence, gồm channel replacement, reconnect, leave/shutdown, snapshot khi set overlap, phục hồi sau write fail, JSON lỗi và dọn temporary file.
+Test bao phủ:
 
-GitHub Actions của repository chạy `npm ci` và `npm test` trên Node 24 cho push và pull request vào `master`.
+- authorization, owner dispatch, safe error và ephemeral reply;
+- voice join, leave, reconnect, status, invalid channel và command error;
+- guild/global command registration;
+- command-schema comparison ổn định và startup no-op;
+- VoiceManager generation lifecycle và reconnect regression;
+- StateStore atomic persistence, overlapping snapshot, queue recovery, malformed JSON và cleanup temporary file.
 
-Các kiểm tra bổ sung ở local:
+Các kiểm tra bổ sung:
 
-```bash
+~~~bash
+npm ci
 npm audit --omit=dev
-node -e "console.log(require('node:crypto').getCiphers().includes('aes-256-gcm'))"
-```
+npm ls --depth=0
+~~~
+
+GitHub Actions chạy `npm ci` và `npm test` trên Node 24 cho push và pull request vào `master`.
 
 ## Cấu trúc dự án
 
-```text
+~~~text
 src/
-  config.js                 Cấu hình môi trường và kiểm tra lúc khởi động
-  index.js                  Khởi động process và graceful shutdown
-  discord/                  Discord client, chat, voice và silence stream
-  store/stateStore.js       Lưu state JSON atomic
-  web/                      Express auth/API/server và Socket.IO
-public/                     Dashboard tĩnh
-test/                       Các test dùng node:test
-audit/                      Lịch sử review và remediation
-Dockerfile                  Production image Node 24
-docker-compose.yml          Workflow chạy container local
-```
+  config.js                   Minimal environment contract
+  index.js                    Startup, command sync, restore và shutdown
+  discord/
+    client.js                 Discord client và minimal intents
+    commandManager.js         Slash command, authorization, sync, diagnostics
+    silenceStream.js          Silent Opus frame stream
+    voiceManager.js           Persistent voice lifecycle
+  store/stateStore.js         Atomic JSON persistence
+test/
+  commandManager.test.js
+  stateStore.test.js
+  voiceManager.test.js
+audit/                         Historical review và completion reports
+~~~
 
 ## Xử lý sự cố
 
-### Bot không khởi động vì intents
+### Không thấy command
 
-Bật **Message Content Intent** trong Discord Developer Portal và kiểm tra bot đã được mời với các quyền cần thiết.
+Kiểm tra bot đã được invite với scope `applications.commands` và `BOT_TOKEN` hợp lệ. Đặt `COMMAND_GUILD_ID` thành test guild để đăng ký nhanh, restart process hoặc chạy `/afk commands sync`.
 
-### OAuth redirect bị lỗi
+Global command có thể propagate lâu hơn guild command.
 
-Kiểm tra `DISCORD_REDIRECT_URI` khớp chính xác với OAuth2 redirect đã đăng ký trên Discord, gồm scheme, hostname, port, path và dấu slash cuối.
+### Tôi bị từ chối unauthorized
 
-### Dashboard bị đăng xuất sau khi restart
+Copy Discord user ID của bạn và thêm vào `OWNER_DISCORD_IDS` dạng phân tách bằng dấu phẩy. Restart process sau khi đổi `.env`.
 
-Đây là hành vi bình thường. Session nằm trong memory và không được lưu qua process restart. Hãy đăng nhập lại; voice target được lưu riêng dưới `DATA_DIR`.
+### Bot không join được voice
 
-### Bot không reconnect được vào voice target đã lưu
+Kiểm tra channel được chọn là voice hoặc stage channel và bot có quyền Connect, Speak. Command phải được chạy trong target guild.
 
-Kiểm tra bot còn ở trong guild, channel còn tồn tại và là voice channel, đồng thời bot còn quyền Connect và Speak. Target không hợp lệ sẽ được ghi log; hãy join một channel hợp lệ mới từ dashboard.
+### Voice target lưu bị invalid sau restart
 
-### Cổng đã được sử dụng
+Kiểm tra guild/channel còn tồn tại, bot vẫn là member của guild và permission còn đủ. Join một channel hợp lệ lần nữa để thay target đã lưu.
 
-Đổi `PORT` hoặc dừng process đang chiếm cổng. `HOST` điều khiển địa chỉ bind độc lập với `PORT`.
+### Process thoát khi startup
 
-## Giới hạn hiện tại
+Kiểm tra console output về `BOT_TOKEN` thiếu, `OWNER_DISCORD_IDS` thiếu, không truy cập được command guild, Discord login error hoặc command registration error.
 
-- `memorystore` được chủ ý dùng trong memory. Session mất khi process restart và không phù hợp cho multi-process deployment.
-- Password login không có brute-force limiter tích hợp. Khi cần, dùng OAuth owner allowlist và rate limiting ở reverse proxy.
-- Auth, API và frontend có ít automated coverage hơn voice và persistence subsystem.
-- Saved voice target được giữ lại khi trở nên không hợp lệ; LocalAFK không tự xóa vì owner có thể muốn sửa guild/channel rồi thử lại.
-- Voice presence liên tục vẫn phụ thuộc Discord gateway, network, host, process manager và permissions.
+### Voice reconnect liên tục
+
+Kiểm tra kết nối Discord Gateway, độ ổn định host/network và voice permission. `/afk voice status` và `/afk diagnostics` cho biết state hiện tại mà không cần shell access.
+
+## Giới hạn
+
+- Không có session và web authentication; control chỉ qua Discord slash command.
+- Một process sở hữu bot và voice connection. Chưa có multi-process coordination.
+- desiredVoice được giữ lại khi guild/channel không còn hợp lệ; không tự xóa âm thầm.
+- Global command propagation phụ thuộc Discord và có thể chậm hơn guild registration.
+- Voice presence liên tục vẫn phụ thuộc Discord, network, host, process supervision và permission.
+- Auth/API/frontend test của dashboard cũ không còn vì runtime đó đã bị loại bỏ; command, voice và persistence được bao phủ bởi test tích hợp hiện tại.
 
 ## Đóng góp
 
-Issue và pull request luôn được hoan nghênh.
+Hoan nghênh issue và pull request.
 
 Trước khi mở pull request:
 
-- giữ cách tiếp cận CommonJS và ít dependency nếu không có lý do rõ ràng để thay đổi;
-- chạy `npm ci` và `npm test`;
-- cập nhật test khi thay đổi voice lifecycle hoặc persistence;
-- mô tả thay đổi và các bước verification đã thực hiện;
-- không đưa secret, local state hoặc deployment credential vào commit.
+- giữ runtime nhỏ và direct dependency tối thiểu;
+- chạy `npm ci`, `npm test` và `npm audit --omit=dev`;
+- thêm test cho authorization, command sync, voice lifecycle hoặc persistence khi thay đổi liên quan;
+- không thêm web, Docker, database hoặc hot-reload infrastructure nếu chưa có feature agreement riêng;
+- không đưa token, `.env`, local state hoặc deployment credential vào commit.
 
 ## Giấy phép
 
@@ -275,7 +324,7 @@ LocalAFK được phát hành theo [MIT License](LICENSE).
 
 ## 💖 Ủng hộ dự án
 
-LocalAFK là một dự án **miễn phí và mã nguồn mở**. Nếu LocalAFK giúp bạn tiết kiệm thời gian, hãy dành cho dự án một ⭐ **Star** — điều đó giúp dự án được duy trì và tiếp tục cải thiện.
+LocalAFK là một dự án **miễn phí và mã nguồn mở**. Nếu dự án giúp ích cho bạn, hãy tặng một ⭐ **Star** — đó là động lực để chúng tôi tiếp tục duy trì và cải thiện dự án.
 
 <a href="https://github.com/thuanlyt/LocalAFK/stargazers">
   <img src="https://img.shields.io/github/stars/thuanlyt/LocalAFK?style=social" alt="GitHub Stars">
