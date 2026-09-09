@@ -11,7 +11,7 @@ LocalAFK is a lightweight, headless Discord bot controlled entirely through slas
 
 There is no dashboard, HTTP server, browser control plane, web login, Docker requirement, database, or reverse-proxy requirement.
 
-**Current stable release:** [v1.0.0](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.0.0)
+**Current stable release:** [v1.1.0](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.1.0)
 
 ## Contents
 
@@ -121,10 +121,10 @@ Edit .env before starting. On Windows PowerShell, copy the example with:
 Copy-Item .env.example .env
 ~~~
 
-To pin the checkout to the first stable release instead of the current master branch:
+To pin the checkout to the current stable release instead of the current master branch:
 
 ~~~bash
-git checkout v1.0.0
+git checkout v1.1.0
 ~~~
 
 Invite the bot with the bot and applications.commands scopes, then run /afk ping in a guild where your Discord user ID is listed in OWNER_DISCORD_IDS.
@@ -335,7 +335,7 @@ Check Discord gateway connectivity, host/network stability, and voice permission
 
 ## Releases
 
-The latest stable version is [v1.0.0](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.0.0).
+The latest stable version is [v1.1.0](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.1.0).
 
 Release tags are treated as immutable snapshots. The `master` branch may contain documentation or development changes made after the latest release.
 
