@@ -1,14 +1,24 @@
+const os = require('node:os');
 const {
   ChannelType,
   SlashCommandBuilder,
 } = require('discord.js');
 const { StatsProvider } = require('../system/statsProvider');
+const { sampleProcessCpuPercent } = require('../system/processStats');
+const { BotManagerError, STATUS, ALL_SLOTS, WORKER_SLOTS, CONTROLLER_SLOT } = require('./botManager');
 
 const ROOT_COMMAND = 'afk';
 const MAX_RESPONSE_LENGTH = 1_900;
 const DEFAULT_STATS_COOLDOWN_MS = 5_000;
 const DEFAULT_PORT_ROWS = 15;
 const DEFAULT_PROCESS_ROWS = 10;
+const DEFAULT_STATUS_CPU_SAMPLE_MS = 200;
+
+const WORKER_BOT_CHOICES = WORKER_SLOTS.map((slot) => ({ name: String(slot), value: slot }));
+const ANY_BOT_CHOICES = ALL_SLOTS.map((slot) => ({
+  name: slot === CONTROLLER_SLOT ? slot + ' (Controller)' : String(slot),
+  value: slot,
+}));
 
 class CommandError extends Error {
   constructor(userMessage) {
@@ -18,37 +28,63 @@ class CommandError extends Error {
   }
 }
 
+function addBotSelectorOption(subcommand, { required = false, description, choices } = {}) {
+  return subcommand.addIntegerOption((option) => {
+    option
+      .setName('bot')
+      .setDescription(description || 'Bot slot to target (defaults to 1, the Controller)')
+      .setRequired(required);
+    for (const choice of choices) option.addChoices(choice);
+    return option;
+  });
+}
+
 function buildCommandSchema() {
   return [new SlashCommandBuilder()
     .setName(ROOT_COMMAND)
-    .setDescription('Control the LocalAFK Discord bot')
+    .setDescription('Control the LocalAFK Discord bots')
     .addSubcommandGroup((group) =>
       group
         .setName('voice')
-        .setDescription('Manage the persistent voice connection')
+        .setDescription('Manage a bot\'s persistent voice connection')
         .addSubcommand((subcommand) =>
-          subcommand
-            .setName('join')
-            .setDescription('Join and persist a voice channel')
-            .addChannelOption((option) =>
-              option
-                .setName('channel')
-                .setDescription('Voice channel to join')
-                .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
-                .setRequired(true)
-            )
+          addBotSelectorOption(
+            subcommand
+              .setName('join')
+              .setDescription('Join and persist a voice channel')
+              .addChannelOption((option) =>
+                option
+                  .setName('channel')
+                  .setDescription('Voice channel to join')
+                  .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
+                  .setRequired(true)
+              ),
+            { choices: ANY_BOT_CHOICES }
+          )
         )
         .addSubcommand((subcommand) =>
-          subcommand.setName('leave').setDescription('Leave voice and clear the saved target')
+          addBotSelectorOption(
+            subcommand.setName('leave').setDescription('Leave voice and clear the saved target'),
+            { choices: ANY_BOT_CHOICES }
+          )
         )
         .addSubcommand((subcommand) =>
-          subcommand.setName('reconnect').setDescription('Reconnect to the saved voice target')
+          addBotSelectorOption(
+            subcommand.setName('reconnect').setDescription('Reconnect to the saved voice target'),
+            { choices: ANY_BOT_CHOICES }
+          )
         )
         .addSubcommand((subcommand) =>
-          subcommand.setName('status').setDescription('Show voice connection status')
+          addBotSelectorOption(
+            subcommand.setName('status').setDescription('Show voice connection status'),
+            { choices: ANY_BOT_CHOICES }
+          )
         )
         .addSubcommand((subcommand) =>
-          subcommand.setName('members').setDescription('List members in the current voice channel')
+          addBotSelectorOption(
+            subcommand.setName('members').setDescription('List members in the current voice channel'),
+            { choices: ANY_BOT_CHOICES }
+          )
         )
     )
     .addSubcommandGroup((group) =>
@@ -62,14 +98,40 @@ function buildCommandSchema() {
           subcommand.setName('status').setDescription('Show slash-command registration status')
         )
     )
+    .addSubcommandGroup((group) =>
+      group
+        .setName('bot')
+        .setDescription('Manage worker bot slots (2-5)')
+        .addSubcommand((subcommand) =>
+          subcommand.setName('list').setDescription('List all five bot slots')
+        )
+        .addSubcommand((subcommand) =>
+          addBotSelectorOption(
+            subcommand.setName('start').setDescription('Start a worker bot'),
+            { required: true, description: 'Worker slot to start', choices: WORKER_BOT_CHOICES }
+          )
+        )
+        .addSubcommand((subcommand) =>
+          addBotSelectorOption(
+            subcommand.setName('stop').setDescription('Stop a worker bot'),
+            { required: true, description: 'Worker slot to stop', choices: WORKER_BOT_CHOICES }
+          )
+        )
+        .addSubcommand((subcommand) =>
+          addBotSelectorOption(
+            subcommand.setName('restart').setDescription('Restart a worker bot'),
+            { required: true, description: 'Worker slot to restart', choices: WORKER_BOT_CHOICES }
+          )
+        )
+    )
     .addSubcommand((subcommand) =>
       subcommand.setName('ping').setDescription('Show gateway latency and process uptime')
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('status').setDescription('Show compact bot and voice status')
+      subcommand.setName('status').setDescription('Show LocalAFK process resource usage and all five bot slots')
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('diagnostics').setDescription('Show a safe operational diagnostics snapshot')
+      subcommand.setName('diagnostics').setDescription('Show a safe Controller operational diagnostics snapshot')
     )
     .addSubcommand((subcommand) =>
       subcommand.setName('stats').setDescription('Show read-only VPS/host system statistics')
@@ -179,8 +241,16 @@ function truncateResponse(content) {
 }
 
 function gatewayPing(client) {
-  const ping = Number(client.ws?.ping);
+  const ping = Number(client?.ws?.ping);
   return Number.isFinite(ping) && ping >= 0 ? ping + ' ms' : 'unavailable';
+}
+
+function voiceDescription(voice) {
+  if (!voice) return 'idle';
+  if (voice.connected) return 'connected (' + (voice.channelName || voice.channelId) + ')';
+  if (voice.reconnectPending) return 'reconnecting';
+  if (voice.channelId) return 'disconnected';
+  return 'idle';
 }
 
 function formatVoiceStatus(status) {
@@ -223,7 +293,6 @@ function formatSystemSection(system) {
   if (system.hostname) lines.push('Hostname: ' + system.hostname);
   else if (system.hostnameOmitted) lines.push('Hostname: (omitted)');
   lines.push('Platform: ' + system.platform + ' ' + system.release);
-  lines.push('Node: ' + system.nodeVersion);
   lines.push('Uptime: ' + formatDuration(system.uptimeSeconds * 1_000));
   lines.push('CPU cores: ' + system.cpuCount);
   lines.push(
@@ -247,22 +316,6 @@ function formatSystemSection(system) {
   return lines.join('\n');
 }
 
-function formatLocalafkSection(localafk) {
-  const voice = localafk.voice || {};
-  const voiceTarget = voice.channelId
-    ? (voice.guildName || voice.guildId || 'unknown guild') + ' / ' + (voice.channelName || voice.channelId)
-    : 'none';
-  return [
-    '**LOCALAFK**',
-    'PID: ' + localafk.pid,
-    'RSS: ' + formatBytes(localafk.memory.rss),
-    'Heap used: ' + formatBytes(localafk.memory.heapUsed),
-    'Process uptime: ' + formatDuration(localafk.uptimeSeconds * 1_000),
-    'Gateway ping: ' + localafk.gatewayPing,
-    'Voice: ' + (voice.state || 'idle') + ' (' + voiceTarget + ')',
-  ].join('\n');
-}
-
 function formatPortsSection(ports, maxRows) {
   const lines = ['**PORTS**'];
   if (!ports.available) {
@@ -274,13 +327,14 @@ function formatPortsSection(ports, maxRows) {
     lines.push(maxRows <= 0 ? '(rows omitted to fit response size)' : 'No listening ports detected.');
   } else {
     lines.push('```');
-    lines.push('PROTO  BIND             PORT   STATE   PROCESS');
+    lines.push('PROTO  BIND             PORT   STATE   PID     PROCESS');
     for (const entry of shown) {
       lines.push(
         padRight(entry.protocol, 7) +
           padRight(entry.localAddress, 17) +
           padRight(entry.port, 7) +
           padRight(entry.state, 8) +
+          padRight(entry.pid ?? 'unknown', 8) +
           entry.process
       );
     }
@@ -288,9 +342,6 @@ function formatPortsSection(ports, maxRows) {
   }
   const remaining = ports.entries.length - shown.length + ports.truncatedCount;
   if (remaining > 0) lines.push('… and ' + remaining + ' more.');
-  if (ports.establishedCount !== null && ports.establishedCount !== undefined) {
-    lines.push('Established connections: ' + ports.establishedCount);
-  }
   return lines.join('\n');
 }
 
@@ -322,22 +373,19 @@ function formatProcessesSection(processes, maxRows) {
 }
 
 /**
- * Renders the full /afk stats response within MAX_RESPONSE_LENGTH. Priority order when the
- * content doesn't fit: system summary, then LocalAFK, then listening ports, then top
- * processes — so rows are trimmed from processes first, then ports, never silently
- * mid-cutting a section.
+ * Renders /afk stats — strictly VPS/host statistics, no bot-specific data (that lives in
+ * /afk status). Priority order when the content doesn't fit: system summary, then listening
+ * ports, then top processes — rows are trimmed from processes first, then ports.
  */
-function formatStats(stats, localafk) {
+function formatStats(stats) {
   const system = formatSystemSection(stats.system);
-  const localafkSection = formatLocalafkSection(localafk);
-  const fixedLength = system.length + localafkSection.length + 16;
 
   let portRows = Math.min(stats.ports.entries.length, DEFAULT_PORT_ROWS);
   let processRows = Math.min(stats.processes.entries.length, DEFAULT_PROCESS_ROWS);
   let ports = formatPortsSection(stats.ports, portRows);
   let processes = formatProcessesSection(stats.processes, processRows);
 
-  const budget = MAX_RESPONSE_LENGTH - fixedLength - 16;
+  const budget = MAX_RESPONSE_LENGTH - system.length - 16;
   while (ports.length + processes.length > Math.max(budget, 0) && (processRows > 0 || portRows > 0)) {
     if (processRows > 0) {
       processRows -= 1;
@@ -348,19 +396,22 @@ function formatStats(stats, localafk) {
     }
   }
 
-  return truncateResponse([system, localafkSection, ports, processes].join('\n\n'));
+  return truncateResponse([system, ports, processes].join('\n\n'));
 }
 
 class CommandManager {
-  constructor(client, voiceManager, config, options = {}) {
-    this.client = client;
-    this.voiceManager = voiceManager;
+  constructor(botManager, config, options = {}) {
+    this.botManager = botManager;
     this.config = config;
     this.logger = options.logger || console;
     this.commandSchema = options.commandSchema || buildCommandSchema();
     this.statsProvider = options.statsProvider || new StatsProvider({ showHostname: config.statsShowHostname });
     this.statsCooldownMs = options.statsCooldownMs ?? DEFAULT_STATS_COOLDOWN_MS;
     this.statsCooldowns = new Map();
+    this.sampleProcessCpuPercent = options.sampleProcessCpuPercent || sampleProcessCpuPercent;
+    this.getCpuCount = options.getCpuCount || (() => os.cpus()?.length || 1);
+    this.getTotalMemBytes = options.getTotalMemBytes || (() => os.totalmem());
+    this.statusCpuSampleMs = options.statusCpuSampleMs ?? DEFAULT_STATUS_CPU_SAMPLE_MS;
     this.lastSync = null;
     this.boundInteractionHandler = (interaction) => {
       if (typeof interaction.isChatInputCommand === 'function' && !interaction.isChatInputCommand()) {
@@ -372,6 +423,14 @@ class CommandManager {
       });
     };
     this.client.on('interactionCreate', this.boundInteractionHandler);
+  }
+
+  get client() {
+    return this.botManager.controller.client;
+  }
+
+  get voiceManager() {
+    return this.botManager.controller.voiceManager;
   }
 
   getLocalCommands() {
@@ -488,7 +547,9 @@ class CommandManager {
       this.logError(error);
       const message = error instanceof CommandError
         ? '❌ ' + error.userMessage
-        : '❌ Command failed. Check the bot logs for details.';
+        : error instanceof BotManagerError
+          ? '❌ ' + error.message
+          : '❌ Command failed. Check the bot logs for details.';
       return this.finishReply(
         interaction,
         message
@@ -505,11 +566,12 @@ class CommandManager {
 
     if (group === 'voice') return this.dispatchVoice(interaction, subcommand);
     if (group === 'commands') return this.dispatchCommands(subcommand);
+    if (group === 'bot') return this.dispatchBot(interaction, subcommand);
 
     if (subcommand === 'ping') {
       return 'Gateway ping: ' + gatewayPing(this.client) + '\nUptime: ' + formatDuration(process.uptime() * 1_000);
     }
-    if (subcommand === 'status') return this.formatOverallStatus();
+    if (subcommand === 'status') return this.formatStatus();
     if (subcommand === 'diagnostics') return this.formatDiagnostics();
     if (subcommand === 'stats') return this.dispatchStats(interaction);
 
@@ -533,19 +595,12 @@ class CommandManager {
       this.logError(error);
       throw new CommandError('Failed to collect host statistics.');
     }
-
-    const voice = this.voiceManager.status();
-    const localafk = {
-      pid: process.pid,
-      memory: process.memoryUsage(),
-      uptimeSeconds: process.uptime(),
-      gatewayPing: gatewayPing(this.client),
-      voice,
-    };
-    return formatStats(stats, localafk);
+    return formatStats(stats);
   }
 
   async dispatchVoice(interaction, subcommand) {
+    const slot = interaction.options.getInteger?.('bot', false) ?? CONTROLLER_SLOT;
+
     if (subcommand === 'join') {
       if (!interaction.guildId) {
         throw new CommandError('Voice commands must be used inside a server.');
@@ -559,31 +614,62 @@ class CommandManager {
       ) {
         throw new CommandError('Please choose a voice channel from this server.');
       }
-      const status = await this.voiceManager.join(interaction.guildId, channel.id);
-      return '✅ Voice target set to ' + (channel.name || channel.id) + '. State: ' + status.state + '.';
+      const voiceManager = this.botManager.resolveVoiceManager(slot);
+      const status = await voiceManager.join(interaction.guildId, channel.id);
+      return '✅ Bot ' + slot + ' voice target set to ' + (channel.name || channel.id) + '. State: ' + status.state + '.';
     }
 
     if (subcommand === 'leave') {
-      await this.voiceManager.leave();
-      return '✅ Voice target cleared and connection stopped.';
+      const voiceManager = this.botManager.resolveVoiceManager(slot);
+      await voiceManager.leave();
+      return '✅ Bot ' + slot + ' voice target cleared and connection stopped.';
     }
 
     if (subcommand === 'reconnect') {
-      const status = await this.voiceManager.reconnect();
-      return '✅ Reconnect requested. State: ' + status.state + '.';
+      const voiceManager = this.botManager.resolveVoiceManager(slot);
+      const status = await voiceManager.reconnect();
+      return '✅ Bot ' + slot + ' reconnect requested. State: ' + status.state + '.';
     }
 
     if (subcommand === 'status') {
-      return formatVoiceStatus(this.voiceManager.status());
+      const voiceManager = this.botManager.resolveVoiceManager(slot);
+      return formatVoiceStatus(voiceManager.status());
     }
 
     if (subcommand === 'members') {
-      const status = this.voiceManager.status();
-      if (!status.channelId) throw new CommandError('The bot has no current voice target.');
-      return formatMembers(this.voiceManager.channelMembers(status.channelId));
+      const voiceManager = this.botManager.resolveVoiceManager(slot);
+      const status = voiceManager.status();
+      if (!status.channelId) throw new CommandError('Bot ' + slot + ' has no current voice target.');
+      return formatMembers(voiceManager.channelMembers(status.channelId));
     }
 
     throw new CommandError('Unknown voice subcommand.');
+  }
+
+  async dispatchBot(interaction, subcommand) {
+    if (subcommand === 'list') return this.formatBotList();
+
+    const slot = interaction.options.getInteger('bot', true);
+
+    if (subcommand === 'start') {
+      const result = await this.botManager.startWorker(slot);
+      if (result.alreadyRunning) return 'ℹ️ Bot ' + slot + ' is already running.';
+      if (result.failed) return '❌ Bot ' + slot + ' failed to start: ' + result.record.error;
+      return '✅ Bot ' + slot + ' started.';
+    }
+
+    if (subcommand === 'stop') {
+      await this.botManager.stopWorker(slot);
+      return '✅ Bot ' + slot + ' stopped. Saved voice target preserved.';
+    }
+
+    if (subcommand === 'restart') {
+      const result = await this.botManager.restartWorker(slot);
+      if (result.failed) return '❌ Bot ' + slot + ' restart failed: ' + result.record.error;
+      return '✅ Bot ' + slot + ' restarted.';
+    }
+
+    throw new CommandError('Unknown bot subcommand.');
   }
 
   async dispatchCommands(subcommand) {
@@ -610,18 +696,138 @@ class CommandManager {
     throw new CommandError('Unknown commands subcommand.');
   }
 
-  formatOverallStatus() {
-    const voice = this.voiceManager.status();
-    const online =
-      typeof this.client.isReady === 'function' ? this.client.isReady() : Boolean(this.client.user);
-    return [
-      'Bot: ' + (online ? 'online' : 'offline'),
+  /** /afk status — the complete LocalAFK process + five-bot-slot status. Never VPS-wide. */
+  async formatStatus() {
+    const cpuCount = this.getCpuCount();
+    const cpuPercent = await this.sampleProcessCpuPercent({ cpuCount, sampleMs: this.statusCpuSampleMs });
+    const memory = process.memoryUsage();
+    const totalMemBytes = this.getTotalMemBytes();
+    const ramPercent = totalMemBytes ? (memory.rss / totalMemBytes) * 100 : null;
+
+    let configuredCount = 0;
+    let onlineCount = 0;
+    let voiceConnectedCount = 0;
+    for (const slot of ALL_SLOTS) {
+      const record = this.botManager.get(slot);
+      if (record.configured) configuredCount += 1;
+      if (record.status === STATUS.ONLINE) {
+        onlineCount += 1;
+        if (record.voiceManager?.status()?.connected) voiceConnectedCount += 1;
+      }
+    }
+
+    const header = [
+      '**LOCALAFK**',
+      'PID: ' + process.pid,
+      'Process CPU: ' + (cpuPercent === null ? 'n/a' : cpuPercent.toFixed(1) + '%') + ' (of total VPS capacity)',
+      'RSS: ' + formatBytes(memory.rss) + (ramPercent === null ? '' : ' (' + ramPercent.toFixed(1) + '% of VPS RAM)'),
+      'Heap used: ' + formatBytes(memory.heapUsed),
       'Uptime: ' + formatDuration(process.uptime() * 1_000),
-      'Gateway ping: ' + gatewayPing(this.client),
-      'Voice: ' + (voice.state || 'idle'),
-      'Target: ' + (voice.channelName || voice.channelId || 'none'),
-      'Command scope: ' + this.getScope(),
+      'Bots: ' + configuredCount + ' configured • ' + onlineCount + ' online',
+      'Voice connected: ' + voiceConnectedCount,
     ].join('\n');
+
+    const disclaimer = 'Per-bot CPU/RAM: shared single-process runtime; exact attribution is unavailable by design.';
+    const botsHeader = ['**BOTS**', disclaimer, ''].join('\n');
+
+    let botsSection = this._formatBotStatusLines(false);
+    let full = [header, botsHeader + botsSection].join('\n\n');
+    if (full.length > MAX_RESPONSE_LENGTH) {
+      botsSection = this._formatBotStatusLines(true);
+      full = [header, botsHeader + botsSection].join('\n\n');
+    }
+    return truncateResponse(full);
+  }
+
+  _formatBotStatusLines(compact) {
+    const lines = [];
+    for (const slot of ALL_SLOTS) {
+      const record = this.botManager.get(slot);
+      const role = slot === CONTROLLER_SLOT ? 'Controller' : 'Worker';
+
+      if (!record.configured) {
+        lines.push(slot + ' • ' + role + ' — UNCONFIGURED');
+        continue;
+      }
+      if (record.status === STATUS.STOPPED) {
+        lines.push(slot + ' • ' + role + ' — STOPPED');
+        continue;
+      }
+      if (record.status === STATUS.STARTING) {
+        lines.push(slot + ' • ' + role + ' — STARTING');
+        continue;
+      }
+      if (record.status === STATUS.FAILED) {
+        lines.push(slot + ' • ' + role + ' — FAILED (' + (record.error || 'unknown') + ')');
+        continue;
+      }
+
+      const tag = record.client?.user?.tag || record.client?.user?.username || 'unknown';
+      const voice = record.voiceManager?.status();
+      const desc = voiceDescription(voice);
+      const uptime = record.loggedInAt ? formatDuration(Date.now() - record.loggedInAt) : 'n/a';
+      const guildCount = record.client?.guilds?.cache?.size ?? 0;
+
+      if (compact) {
+        lines.push(
+          slot + ' • ' + role + ' — ONLINE (' + tag + ') • Voice: ' + desc + ' • Ping: ' + gatewayPing(record.client)
+        );
+      } else {
+        lines.push(slot + ' • ' + role + ' — ONLINE (' + tag + ')');
+        lines.push('  Uptime: ' + uptime + ' • Ping: ' + gatewayPing(record.client) + ' • Guilds: ' + guildCount);
+        lines.push('  Voice: ' + desc);
+      }
+    }
+    return lines.join('\n');
+  }
+
+  /** /afk bot list — compact per-slot overview, does not require live login for stopped slots. */
+  async formatBotList() {
+    const lines = [];
+    let online = 0;
+    for (const slot of ALL_SLOTS) {
+      if (this.botManager.get(slot).status === STATUS.ONLINE) online += 1;
+    }
+    lines.push('**BOTS — ' + online + '/5 ONLINE**');
+    lines.push('');
+
+    for (const slot of ALL_SLOTS) {
+      const record = this.botManager.get(slot);
+      if (!record.configured) {
+        lines.push(slot + ' • unconfigured');
+        lines.push('');
+        continue;
+      }
+
+      if (record.status === STATUS.ONLINE) {
+        const name = record.client?.user?.tag || record.client?.user?.username || 'online';
+        const voice = record.voiceManager?.status();
+        lines.push(slot + ' • ' + name);
+        lines.push('ONLINE • Voice: ' + voiceDescription(voice) + ' • Ping: ' + gatewayPing(record.client));
+      } else if (record.status === STATUS.STARTING) {
+        lines.push(slot + ' • configured');
+        lines.push('STARTING');
+      } else if (record.status === STATUS.FAILED) {
+        lines.push(slot + ' • configured');
+        lines.push('FAILED • ' + (record.error || 'login failed'));
+      } else {
+        const saved = await record.stateStore.get('desiredVoice');
+        const target = saved?.channelId ? this._resolveChannelLabel(saved) : 'none';
+        lines.push(slot + ' • configured');
+        lines.push('STOPPED • Saved target: ' + target);
+      }
+      lines.push('');
+    }
+
+    return truncateResponse(lines.join('\n').trimEnd());
+  }
+
+  /** Best-effort channel name lookup via the Controller's cache; falls back to the raw ID. */
+  _resolveChannelLabel(saved) {
+    const controllerClient = this.botManager.controller.client;
+    const guild = controllerClient?.guilds?.cache?.get(saved.guildId);
+    const channel = guild?.channels?.cache?.get(saved.channelId);
+    return channel?.name || saved.channelId;
   }
 
   async formatDiagnostics() {
