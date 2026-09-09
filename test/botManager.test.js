@@ -179,6 +179,22 @@ test('restart creates a fresh Client/VoiceManager runtime', async () => {
   assert.notEqual(botManager.get(2).voiceManager, firstVoiceManager);
   assert.equal(firstClient.destroyed, true);
   assert.equal(botManager.get(2).status, STATUS.ONLINE);
+  // Not just "not the old reference" — an actual new runtime must be attached, not null.
+  assert.notEqual(botManager.get(2).client, null);
+  assert.notEqual(botManager.get(2).voiceManager, null);
+});
+
+test('restarting an already-ONLINE worker does not leave it reporting ONLINE with no runtime attached', async () => {
+  const { botManager } = makeManager({ 4: 'worker-4-token' });
+  await botManager.startWorker(4);
+  assert.equal(botManager.get(4).status, STATUS.ONLINE);
+
+  await botManager.restartWorker(4);
+
+  assert.equal(botManager.get(4).status, STATUS.ONLINE);
+  assert.notEqual(botManager.get(4).client, null, 'a restarted worker must have a real Client attached');
+  assert.notEqual(botManager.get(4).voiceManager, null, 'a restarted worker must have a real VoiceManager attached');
+  assert.doesNotThrow(() => botManager.resolveVoiceManager(4));
 });
 
 test('a worker login failure does not affect other bots', async () => {
@@ -261,4 +277,25 @@ test('resolveVoiceManager returns the live VoiceManager once a worker is online'
   await botManager.startWorker(2);
   const voiceManager = botManager.resolveVoiceManager(2);
   assert.equal(voiceManager, botManager.get(2).voiceManager);
+});
+
+test('a worker restart recreates its VoiceManager using the same stable slot-derived connection group', async () => {
+  // Uses the REAL default VoiceManager factory (not the fake) so connectionGroup is inspectable.
+  const { botManager } = makeManager({ 3: 'worker-3-token' }, { createVoiceManager: undefined });
+  await botManager.startWorker(3);
+  assert.equal(botManager.get(3).voiceManager.connectionGroup, 'localafk-bot-3');
+
+  await botManager.restartWorker(3);
+
+  assert.equal(botManager.get(3).voiceManager.connectionGroup, 'localafk-bot-3');
+});
+
+test("the Controller's runtime always uses Bot 1's own connection group, including after re-creation", async () => {
+  const { botManager } = makeManager({}, { createVoiceManager: undefined });
+  botManager.createControllerRuntime();
+  assert.equal(botManager.controller.voiceManager.connectionGroup, 'localafk-bot-1');
+
+  // Simulate a re-created Controller runtime (e.g. a fresh BotManager after a process restart).
+  botManager.createControllerRuntime();
+  assert.equal(botManager.controller.voiceManager.connectionGroup, 'localafk-bot-1');
 });

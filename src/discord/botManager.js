@@ -38,6 +38,19 @@ function stateFileName(slot) {
 }
 
 /**
+ * Stable, slot-derived @discordjs/voice connection group (never the bot's username, which can
+ * change). Every VoiceManager needs a group unique to its own Client — see the comment on
+ * VoiceManager's connectionGroup for why the process-wide connection registry requires this.
+ */
+function connectionGroupForSlot(slot) {
+  return 'localafk-bot-' + slot;
+}
+
+function defaultCreateVoiceManager(client, stateStore, slot) {
+  return new VoiceManager(client, stateStore, { connectionGroup: connectionGroupForSlot(slot) });
+}
+
+/**
  * Owns all five bot slots (1 = Controller, 2-5 = Workers) inside a single Node process/
  * single Discord.js runtime — see README "Five-bot architecture". Each configured slot gets
  * its own Client + VoiceManager (never shared), created lazily and destroyed on stop so a
@@ -53,7 +66,7 @@ class BotManager {
     this.config = config;
     this.createClient = options.createClient || createClient;
     this.createStateStore = options.createStateStore || ((filePath) => new StateStore(filePath));
-    this.createVoiceManager = options.createVoiceManager || ((client, stateStore) => new VoiceManager(client, stateStore));
+    this.createVoiceManager = options.createVoiceManager || defaultCreateVoiceManager;
     this.logger = options.logger || console;
     this.loginTimeoutMs = options.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS;
     this.workerStartStaggerMs = options.workerStartStaggerMs ?? DEFAULT_WORKER_START_STAGGER_MS;
@@ -91,7 +104,7 @@ class BotManager {
   createControllerRuntime() {
     const record = this.controller;
     record.client = this.createClient();
-    record.voiceManager = this.createVoiceManager(record.client, record.stateStore);
+    record.voiceManager = this.createVoiceManager(record.client, record.stateStore, record.slot);
     return record;
   }
 
@@ -149,7 +162,7 @@ class BotManager {
     record.status = STATUS.STARTING;
     record.error = null;
     record.client = this.createClient();
-    record.voiceManager = this.createVoiceManager(record.client, record.stateStore);
+    record.voiceManager = this.createVoiceManager(record.client, record.stateStore, record.slot);
 
     try {
       await this._login(record);
@@ -187,6 +200,10 @@ class BotManager {
 
     if (record.voiceManager) await record.voiceManager.shutdown();
     this._releaseRuntime(record);
+    // _releaseRuntime() clears client/voiceManager but not status; without resetting it here,
+    // startWorker() would see the still-ONLINE status and short-circuit as "already running",
+    // leaving the slot reporting ONLINE with no actual runtime attached.
+    record.status = STATUS.STOPPED;
     return this.startWorker(slot, { persistEnabled: true });
   }
 
@@ -265,4 +282,13 @@ class BotManager {
   }
 }
 
-module.exports = { BotManager, BotManagerError, STATUS, ALL_SLOTS, WORKER_SLOTS, CONTROLLER_SLOT, safeErrorMessage };
+module.exports = {
+  BotManager,
+  BotManagerError,
+  STATUS,
+  ALL_SLOTS,
+  WORKER_SLOTS,
+  CONTROLLER_SLOT,
+  safeErrorMessage,
+  connectionGroupForSlot,
+};

@@ -31,6 +31,14 @@ class VoiceManager extends EventEmitter {
     this.voice = options.voiceDeps || defaultVoiceDeps;
     this.baseReconnectDelayMs = options.baseReconnectDelayMs ?? DEFAULT_BASE_RECONNECT_DELAY_MS;
     this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? DEFAULT_MAX_RECONNECT_DELAY_MS;
+    // @discordjs/voice tracks every VoiceConnection in a single process-wide registry keyed by
+    // (guildId, group) — see createVoiceConnection() in @discordjs/voice. Multiple Discord
+    // Clients in this one process are invisible to that registry, so without a distinct group
+    // per Client, two bots joining the same guild collide: the second joinVoiceChannel() call
+    // finds the first bot's existing connection and reissues its move-to-channel payload
+    // through the FIRST bot's adapter, moving the wrong bot. A caller-supplied, stable group
+    // keeps each bot's connections in their own partition of that registry.
+    this.connectionGroup = options.connectionGroup || 'default';
 
     this.connection = null;
     this.player = null;
@@ -40,6 +48,11 @@ class VoiceManager extends EventEmitter {
     this.reconnectDelay = this.baseReconnectDelayMs;
     this.generation = 0;
     this.shuttingDown = false;
+  }
+
+  /** Prefixes every log line with this bot's connection group, so multi-bot logs are traceable. */
+  _log(message) {
+    this.emit('log', `[voice:${this.connectionGroup}] ${message}`);
   }
 
   status() {
@@ -116,7 +129,7 @@ class VoiceManager extends EventEmitter {
     if (saved?.guildId && saved?.channelId) {
       this.desired = saved;
       this._connect();
-      this.emit('log', `Đang khôi phục kết nối voice trước đó: ${saved.channelId}`);
+      this._log(`Đang khôi phục kết nối voice trước đó: ${saved.channelId}`);
     }
   }
 
@@ -160,12 +173,12 @@ class VoiceManager extends EventEmitter {
     const { guildId, channelId } = this.desired;
     const guild = this.client.guilds.cache.get(guildId);
     if (!guild) {
-      this.emit('log', `Không thể vào voice: bot không còn trong guild ${guildId}. Dừng thử lại.`);
+      this._log(`Không thể vào voice: bot không còn trong guild ${guildId}. Dừng thử lại.`);
       return null;
     }
     const channel = guild.channels.cache.get(channelId);
     if (!channel || !channel.isVoiceBased()) {
-      this.emit('log', `Không thể vào voice: kênh ${channelId} không còn tồn tại hoặc không phải kênh voice. Dừng thử lại.`);
+      this._log(`Không thể vào voice: kênh ${channelId} không còn tồn tại hoặc không phải kênh voice. Dừng thử lại.`);
       return null;
     }
     return { guild, channel };
@@ -189,6 +202,7 @@ class VoiceManager extends EventEmitter {
       adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: true,
       selfMute: false,
+      group: this.connectionGroup,
     });
     this.connection = connection;
 
@@ -199,14 +213,14 @@ class VoiceManager extends EventEmitter {
     connection.subscribe(player);
     player.on('error', (err) => {
       if (gen !== this.generation) return;
-      this.emit('log', `Voice player error: ${err.message}`);
+      this._log(`Voice player error: ${err.message}`);
     });
 
     connection.on(VoiceConnectionStatus.Ready, () => {
       if (gen !== this.generation) return; // stale connection, already superseded
       this.connectedAt = Date.now();
       this.reconnectDelay = this.baseReconnectDelayMs;
-      this.emit('log', `Đã kết nối voice: ${channel.id}`);
+      this._log(`Đã kết nối voice: ${channel.id}`);
       this.emit('status', this.status());
     });
 
@@ -234,14 +248,14 @@ class VoiceManager extends EventEmitter {
       this.connectedAt = null;
       this.emit('status', this.status());
       if (this.shuttingDown || !this.desired) return;
-      this.emit('log', `Mất kết nối voice, thử kết nối lại sau ${this.reconnectDelay / 1000}s...`);
+      this._log(`Mất kết nối voice, thử kết nối lại sau ${this.reconnectDelay / 1000}s...`);
       this.reconnectTimer = setTimeout(() => this._connect(), this.reconnectDelay);
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelayMs);
     });
 
     connection.on('error', (err) => {
       if (gen !== this.generation) return;
-      this.emit('log', `Voice connection error: ${err.message}`);
+      this._log(`Voice connection error: ${err.message}`);
     });
   }
 
