@@ -196,11 +196,17 @@ class VoiceManager extends EventEmitter {
     this._disposeConnection();
     const gen = this.generation;
 
+    // selfDeaf/selfMute are both false so Discord doesn't show the bot as deafened/muted.
+    // This does NOT make LocalAFK receive/decode/process incoming voice audio — that only
+    // happens if something subscribes to `connection.receiver`, which nothing here does (see
+    // the outgoing-only `connection.subscribe(player)` below). Discord may still deliver
+    // incoming voice UDP packets to this host; @discordjs/voice's networking layer simply
+    // never decodes or hands them anywhere in this codebase.
     const connection = this.voice.joinVoiceChannel({
       channelId: channel.id,
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
-      selfDeaf: true,
+      selfDeaf: false,
       selfMute: false,
       group: this.connectionGroup,
     });
