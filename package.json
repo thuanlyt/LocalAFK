@@ -1,6 +1,6 @@
 {
   "name": "localafk",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Headless Discord bot controlled by slash commands with persistent voice presence.",
   "main": "src/index.js",
   "type": "commonjs",
