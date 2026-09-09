@@ -11,7 +11,7 @@ LocalAFK is a lightweight, headless Discord bot controlled entirely through slas
 
 There is no dashboard, HTTP server, browser control plane, web login, Docker requirement, database, or reverse-proxy requirement.
 
-**Current stable release:** [v1.2.1](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.1)
+**Current stable release:** [v1.2.2](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.2)
 
 ## Contents
 
@@ -153,7 +153,7 @@ Copy-Item .env.example .env
 To pin the checkout to the current stable release instead of the current master branch:
 
 ~~~bash
-git checkout v1.2.1
+git checkout v1.2.2
 ~~~
 
 Invite the Controller bot with the bot and applications.commands scopes, then run /afk ping in a guild where your Discord user ID is listed in OWNER_DISCORD_IDS. Configure TOKEN_2..TOKEN_5 (each its own bot invited with the bot scope only) later, any time — see [Five-bot architecture](#five-bot-architecture).
@@ -251,6 +251,7 @@ Every configured bot (Controller and each Worker) has its own independent VoiceM
 
 - /afk voice join validates a voice-based channel in the interaction guild before persisting it, for the selected bot.
 - Each VoiceManager sends a steady silent Opus stream.
+- Bots join with `selfDeaf: false` and `selfMute: false` — Discord shows them as neither deafened nor muted. LocalAFK still never subscribes to incoming voice audio (no `connection.receiver`, no decoding, no recording, no storage); Discord may still deliver incoming voice traffic to the host when people speak, but it is never consumed.
 - Unexpected disconnects reconnect with bounded backoff from 5 seconds up to 60 seconds, independently per bot.
 - Generation guards prevent stale connection events and timers from affecting a replacement connection.
 - /afk voice reconnect preserves desiredVoice while intentionally replacing the live connection.
@@ -408,7 +409,7 @@ Check Discord gateway connectivity, host/network stability, and voice permission
 
 ## Releases
 
-The latest stable version is [v1.2.1](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.1).
+The latest stable version is [v1.2.2](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.2).
 
 Release tags are treated as immutable snapshots. The `master` branch may contain documentation or development changes made after the latest release.
 

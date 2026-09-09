@@ -11,7 +11,7 @@ LocalAFK là một Discord bot headless, nhẹ, được điều khiển hoàn t
 
 Dự án không có dashboard, HTTP server, browser control plane, web login, yêu cầu Docker, database hay reverse proxy.
 
-**Bản ổn định hiện tại:** [v1.2.1](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.1)
+**Bản ổn định hiện tại:** [v1.2.2](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.2)
 
 ## Nội dung
 
@@ -153,7 +153,7 @@ Copy-Item .env.example .env
 Để pin checkout vào bản stable hiện tại thay vì branch master:
 
 ~~~bash
-git checkout v1.2.1
+git checkout v1.2.2
 ~~~
 
 Invite bot Controller với scope `bot` và `applications.commands`, sau đó chạy `/afk ping` trong guild nơi Discord user ID của bạn đã có trong `OWNER_DISCORD_IDS`. Cấu hình `TOKEN_2`..`TOKEN_5` (mỗi cái là một bot riêng, chỉ cần scope `bot`) bất cứ lúc nào sau đó — xem [Kiến trúc 5 bot](#kiến-trúc-5-bot).
@@ -251,6 +251,7 @@ Mỗi bot đã cấu hình (Controller và từng Worker) có VoiceManager riên
 
 - `/afk voice join` kiểm tra channel voice/stage trong guild của interaction trước khi lưu, cho đúng bot được chọn.
 - Mỗi VoiceManager gửi silent Opus stream ổn định.
+- Bot join với `selfDeaf: false` và `selfMute: false` — Discord hiển thị bot không bị deafen/mute. LocalAFK vẫn không bao giờ nhận audio đến (không dùng `connection.receiver`, không decode, không ghi âm, không lưu trữ); Discord có thể vẫn gửi voice traffic đến khi có người nói, nhưng traffic đó không bao giờ được xử lý.
 - Disconnect bất ngờ sẽ reconnect với backoff giới hạn từ 5 giây đến 60 giây, độc lập theo từng bot.
 - Generation guard ngăn event và timer cũ ảnh hưởng connection mới.
 - `/afk voice reconnect` giữ desiredVoice và chủ động thay connection hiện tại.
@@ -408,7 +409,7 @@ Kiểm tra kết nối Discord Gateway, độ ổn định host/network và voic
 
 ## Releases
 
-Bản stable mới nhất là [v1.2.1](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.1).
+Bản stable mới nhất là [v1.2.2](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.2).
 
 Release tag được xem là snapshot bất biến. Branch `master` có thể chứa thay đổi tài liệu hoặc phát triển sau release mới nhất.
 
