@@ -11,7 +11,7 @@ LocalAFK là một Discord bot headless, nhẹ, được điều khiển hoàn t
 
 Dự án không có dashboard, HTTP server, browser control plane, web login, yêu cầu Docker, database hay reverse proxy.
 
-**Bản ổn định hiện tại:** [v1.2.0](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.0)
+**Bản ổn định hiện tại:** [v1.2.1](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.1)
 
 ## Nội dung
 
@@ -153,7 +153,7 @@ Copy-Item .env.example .env
 Để pin checkout vào bản stable hiện tại thay vì branch master:
 
 ~~~bash
-git checkout v1.2.0
+git checkout v1.2.1
 ~~~
 
 Invite bot Controller với scope `bot` và `applications.commands`, sau đó chạy `/afk ping` trong guild nơi Discord user ID của bạn đã có trong `OWNER_DISCORD_IDS`. Cấu hình `TOKEN_2`..`TOKEN_5` (mỗi cái là một bot riêng, chỉ cần scope `bot`) bất cứ lúc nào sau đó — xem [Kiến trúc 5 bot](#kiến-trúc-5-bot).
@@ -408,7 +408,7 @@ Kiểm tra kết nối Discord Gateway, độ ổn định host/network và voic
 
 ## Releases
 
-Bản stable mới nhất là [v1.2.0](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.0).
+Bản stable mới nhất là [v1.2.1](https://github.com/thuanlyt/LocalAFK/releases/tag/v1.2.1).
 
 Release tag được xem là snapshot bất biến. Branch `master` có thể chứa thay đổi tài liệu hoặc phát triển sau release mới nhất.
 
