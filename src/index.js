@@ -1,17 +1,15 @@
-const { once } = require('node:events');
-const path = require('node:path');
 const { createConfig } = require('./config');
-const { createClient } = require('./discord/client');
 const { CommandManager } = require('./discord/commandManager');
-const { VoiceManager } = require('./discord/voiceManager');
-const { StateStore } = require('./store/stateStore');
+const { BotManager } = require('./discord/botManager');
 
 async function main() {
   const config = createConfig();
-  const stateStore = new StateStore(path.join(config.dataDir, 'state.json'));
-  const client = createClient();
-  const voiceManager = new VoiceManager(client, stateStore);
-  const commandManager = new CommandManager(client, voiceManager, config);
+  const botManager = new BotManager(config);
+
+  // Controller runtime is created (but not logged in) before CommandManager so its
+  // interactionCreate listener is attached before the client ever connects.
+  botManager.createControllerRuntime();
+  const commandManager = new CommandManager(botManager, config);
 
   let shuttingDown = false;
 
@@ -20,8 +18,7 @@ async function main() {
     shuttingDown = true;
     console.log('[shutdown] Received ' + signal + ', shutting down gracefully...');
     try {
-      await voiceManager.shutdown();
-      client.destroy();
+      await botManager.shutdown();
       console.log('[shutdown] Clean exit.');
     } catch (error) {
       console.error('[shutdown] Error during shutdown:', error);
@@ -43,14 +40,12 @@ async function main() {
     });
   });
 
-  client.on('error', (error) => console.error('[discord] client error:', error));
+  botManager.controller.client.on('error', (error) => console.error('[discord] client error:', error));
 
   try {
-    const ready = once(client, 'clientReady');
-    await client.login(config.botToken);
-    await ready;
+    await botManager.loginController();
+    console.log('[discord] Logged in as ' + botManager.controller.client.user.tag);
 
-    console.log('[discord] Logged in as ' + client.user.tag);
     const sync = await commandManager.syncOnStartup();
     console.log(
       '[commands] ' +
@@ -61,7 +56,10 @@ async function main() {
         sync.scope +
         ').'
     );
-    await voiceManager.restoreFromState();
+    await botManager.restoreControllerVoice();
+
+    await botManager.startConfiguredWorkers();
+
     console.log('[discord] LocalAFK is ready.');
   } catch (error) {
     console.error('[startup] Fatal startup error:', error);

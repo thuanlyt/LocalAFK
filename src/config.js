@@ -1,5 +1,7 @@
 const path = require('node:path');
 
+const BOT_SLOTS = [1, 2, 3, 4, 5];
+
 function list(value) {
   return (value || '')
     .split(',')
@@ -7,9 +9,42 @@ function list(value) {
     .filter(Boolean);
 }
 
+function tokenEnvKey(slot) {
+  return slot === 1 ? 'BOT_TOKEN' : 'TOKEN_' + slot;
+}
+
+function readTokens(env) {
+  const tokens = {};
+  for (const slot of BOT_SLOTS) {
+    tokens[slot] = (env[tokenEnvKey(slot)] || '').trim();
+  }
+  return tokens;
+}
+
+/** Throws (without ever including a token value) if two slots share the same token. */
+function assertNoDuplicateTokens(tokens) {
+  const seenBySlot = new Map();
+  for (const slot of BOT_SLOTS) {
+    const token = tokens[slot];
+    if (!token) continue;
+    for (const [otherSlot, otherToken] of seenBySlot) {
+      if (otherToken === token) {
+        throw new Error(
+          '[config] Duplicate bot token configured for slots ' + otherSlot + ' and ' + slot + '.'
+        );
+      }
+    }
+    seenBySlot.set(slot, token);
+  }
+}
+
 function createConfig(env = process.env) {
+  const tokens = readTokens(env);
+  assertNoDuplicateTokens(tokens);
+
   const config = {
-    botToken: (env.BOT_TOKEN || '').trim(),
+    botToken: tokens[1],
+    tokens,
     ownerIds: list(env.OWNER_DISCORD_IDS),
     commandGuildId: (env.COMMAND_GUILD_ID || '').trim() || null,
     dataDir: path.resolve(
@@ -31,4 +66,4 @@ function createConfig(env = process.env) {
   return config;
 }
 
-module.exports = { createConfig, list };
+module.exports = { createConfig, list, BOT_SLOTS };
