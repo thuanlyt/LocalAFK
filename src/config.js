@@ -15,6 +15,9 @@ function createConfig(env = process.env) {
     dataDir: path.resolve(
       env.DATA_DIR?.trim() || path.join(__dirname, '..', 'data')
     ),
+    // Hostname can reveal an owner-chosen, potentially identifying name. Off by default;
+    // the owner can opt in once they've confirmed their own host's hostname isn't sensitive.
+    statsShowHostname: env.STATS_SHOW_HOSTNAME === 'true',
   };
 
   const missing = [];

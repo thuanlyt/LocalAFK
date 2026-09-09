@@ -73,6 +73,7 @@ Khi chạy lâu dài, hãy dùng process supervisor của hệ điều hành. Lo
 - Voice lifecycle có generation guard và reconnect backoff giới hạn.
 - Ghi desiredVoice atomic, có khả năng phục hồi sau lỗi ghi.
 - Diagnostics an toàn cho Node version, uptime, memory, gateway ping, số guild, voice state và command sync state.
+- Thống kê VPS/host read-only (`/afk stats`): CPU, RAM, swap, disk, listening port và top process — không cần SSH.
 - Đọc file môi trường bằng Node.js native, không cần dependency runtime ngoài Node.js và npm.
 
 ## Kiến trúc
@@ -140,8 +141,9 @@ npm run dev
 | --- | --- | --- |
 | BOT_TOKEN | Có | Discord bot token. Hãy bảo vệ như password. |
 | OWNER_DISCORD_IDS | Có | Danh sách Discord user ID được phép chạy `/afk`, phân tách bằng dấu phẩy. |
-| COMMAND_GUILD_ID | Không | Đăng ký command trong một guild này. Để trống nghĩa là global registration. |
+| COMMAND_GUILD_ID | Không | Đăng ký command trong một guild này. Để trống nghĩa là global registration. Khi được đặt, `/afk` cũng từ chối mọi interaction đến từ guild khác ngay lúc thực thi, độc lập với scope đăng ký. |
 | DATA_DIR | Không | Thư mục chứa `state.json`. Mặc định là `./data`. |
+| STATS_SHOW_HOSTNAME | Không | Đặt `true` để hiển thị hostname của OS trong `/afk stats`. Mặc định ẩn, vì hostname tự đặt có thể chứa thông tin định danh/riêng tư. |
 
 Ứng dụng yêu cầu cả `BOT_TOKEN` và ít nhất một owner ID. `COMMAND_GUILD_ID` hữu ích khi phát triển vì guild command cập nhật nhanh hơn; global command có thể cần thời gian propagate.
 
@@ -163,8 +165,20 @@ Tất cả `/afk` command chỉ dành cho owner. Quyền được kiểm tra run
 | `/afk ping` | Hiển thị gateway ping và process uptime. |
 | `/afk status` | Hiển thị tóm tắt bot, gateway, voice, target và command scope. |
 | `/afk diagnostics` | Hiển thị operational snapshot an toàn, không có token, secret, owner ID hoặc private path. |
+| `/afk stats` | Hiển thị thống kê hệ thống VPS/host read-only: CPU, RAM, swap, disk, listening port và top process. |
 
 Response điều khiển và diagnostics đều là ephemeral. Handler voice gọi public API của VoiceManager, không sao chép voice lifecycle logic.
+
+### /afk stats
+
+`/afk stats` cho phép owner quan sát sức khỏe VPS/host trực tiếp từ Discord, không cần SSH. Lệnh này:
+
+- **chỉ đọc** — không bao giờ exec shell, không nhận command tùy ý, không thể kill/restart/reboot hay sửa bất kỳ file nào;
+- **owner-only và ephemeral** như mọi command `/afk` khác, và bị giới hạn theo guild khi `COMMAND_GUILD_ID` được cấu hình;
+- **có rate-limit** — tối đa 1 lần mỗi 5 giây cho mỗi owner, tránh gọi `ps`/`ss` lặp lại không cần thiết;
+- **được redact có chủ đích** — không bao giờ hiển thị remote peer IP (chỉ có số "Established connections: N"), không hiển thị argv/environment/cwd của process (chỉ pid, CPU%, MEM% và tên executable), và hostname của OS bị ẩn trừ khi đặt rõ `STATS_SHOW_HOSTNAME=true`.
+
+Lệnh không mở HTTP port, không khởi động monitoring server, không thêm web dashboard — Discord vẫn là control plane duy nhất. Trên Linux, lệnh đọc `/proc`, các hàm built-in của `os`, và hai executable cố định `ps`/`ss` với tham số cố định qua `execFile` (không bao giờ dùng chuỗi shell); trên các nền tảng khác (kể cả Windows), phần port/process báo "Unavailable on this platform" thay vì đoán mò hay crash, trong khi CPU/RAM/disk/thống kê process LocalAFK vẫn khả dụng ở bất cứ đâu `fs.statfs`/`os` hỗ trợ.
 
 ### Đăng ký command
 
@@ -248,7 +262,8 @@ Test bao phủ:
 - guild/global command registration;
 - command-schema comparison ổn định và startup no-op;
 - VoiceManager generation lifecycle và reconnect regression;
-- StateStore atomic persistence, overlapping snapshot, queue recovery, malformed JSON và cleanup temporary file.
+- StateStore atomic persistence, overlapping snapshot, queue recovery, malformed JSON và cleanup temporary file;
+- authorization của `/afk stats` (owner/guild/cooldown), redaction (không remote IP, không argv/env), graceful degradation khi thiếu `ss`/`ps` hoặc không phải Linux, và truncation theo response-size.
 
 Các kiểm tra bổ sung:
 
@@ -272,9 +287,11 @@ src/
     silenceStream.js          Silent Opus frame stream
     voiceManager.js           Persistent voice lifecycle
   store/stateStore.js         Atomic JSON persistence
+  system/statsProvider.js     Thống kê host/VPS read-only (CPU, RAM, disk, port, process)
 test/
   commandManager.test.js
   stateStore.test.js
+  statsProvider.test.js
   voiceManager.test.js
 audit/                         Historical review và completion reports
 ~~~

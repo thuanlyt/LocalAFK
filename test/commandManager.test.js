@@ -5,7 +5,51 @@ const {
   CommandManager,
   buildCommandSchema,
   commandSchemasEqual,
+  formatStats,
 } = require('../src/discord/commandManager');
+const { StatsProvider } = require('../src/system/statsProvider');
+
+function makeStatsProvider(overrides = {}) {
+  const calls = [];
+  const stats = {
+    system: {
+      hostname: null,
+      hostnameOmitted: true,
+      platform: 'linux',
+      release: '6.8.0-test',
+      nodeVersion: process.version,
+      uptimeSeconds: 3_600,
+      cpuCount: 4,
+      cpuUtilizationPercent: 12.5,
+      loadAverage: [0.1, 0.2, 0.3],
+      memory: { totalBytes: 2_147_483_648, usedBytes: 1_073_741_824, freeBytes: 1_073_741_824 },
+      swap: { totalBytes: 0, usedBytes: 0 },
+      disk: { totalBytes: 32_212_254_720, usedBytes: 10_737_418_240, availableBytes: 21_474_836_480, unavailableReason: null },
+    },
+    ports: {
+      available: true,
+      reason: null,
+      entries: [{ protocol: 'tcp', localAddress: '0.0.0.0', port: '22', state: 'LISTEN', process: 'sshd' }],
+      truncatedCount: 0,
+      establishedCount: 2,
+    },
+    processes: {
+      available: true,
+      reason: null,
+      entries: [{ pid: 1, cpuPercent: 0.5, memPercent: 0.3, name: 'init' }],
+      truncatedCount: 0,
+      totalCount: 42,
+    },
+    ...overrides,
+  };
+  return {
+    calls,
+    async collect() {
+      calls.push(['collect']);
+      return stats;
+    },
+  };
+}
 
 class FakeClient extends EventEmitter {
   constructor(remoteCommands = []) {
@@ -108,7 +152,7 @@ function makeInteraction({ userId = 'owner', group = null, subcommand, channel =
   return interaction;
 }
 
-function makeManager({ remoteCommands = [], config = {}, voiceManager } = {}) {
+function makeManager({ remoteCommands = [], config = {}, voiceManager, managerOptions = {} } = {}) {
   const client = new FakeClient(remoteCommands);
   const manager = new CommandManager(
     client,
@@ -118,7 +162,7 @@ function makeManager({ remoteCommands = [], config = {}, voiceManager } = {}) {
       commandGuildId: null,
       ...config,
     },
-    { logger: { error() {} } }
+    { logger: { error() {} }, statsProvider: makeStatsProvider(), ...managerOptions }
   );
   return { client, manager };
 }
@@ -313,4 +357,174 @@ test('unexpected handler errors become safe ephemeral responses', async () => {
   assert.doesNotMatch(content, /secret-value/);
   assert.match(logs[0], /secret-value/);
   assert.equal(interaction.calls[0].options.ephemeral, true);
+});
+
+test('schema includes /afk stats alongside the existing subcommands', () => {
+  const schema = buildCommandSchema()[0];
+  const topLevelNames = schema.options.filter((o) => o.type === 1).map((o) => o.name);
+  assert.ok(topLevelNames.includes('stats'));
+});
+
+test('owner can run /afk stats and receives SYSTEM/LOCALAFK/PORTS/PROCESSES with CPU/RAM/disk', async () => {
+  const statsProvider = makeStatsProvider();
+  const { manager } = makeManager({ managerOptions: { statsProvider } });
+  const interaction = makeInteraction({ subcommand: 'stats' });
+
+  await manager.handleInteraction(interaction);
+
+  const content = lastResponse(interaction).payload.content;
+  assert.equal(statsProvider.calls.length, 1);
+  assert.match(content, /\*\*SYSTEM\*\*/);
+  assert.match(content, /\*\*LOCALAFK\*\*/);
+  assert.match(content, /\*\*PORTS\*\*/);
+  assert.match(content, /\*\*PROCESSES\*\*/);
+  assert.match(content, /CPU utilization:/);
+  assert.match(content, /RAM:/);
+  assert.match(content, /Disk \(root\):/);
+  assert.equal(interaction.calls[0].options.ephemeral, true);
+});
+
+test('non-owner is rejected for /afk stats without collecting any stats', async () => {
+  const statsProvider = makeStatsProvider();
+  const { manager } = makeManager({ managerOptions: { statsProvider } });
+  const interaction = makeInteraction({ userId: 'intruder', subcommand: 'stats' });
+
+  await manager.handleInteraction(interaction);
+
+  assert.equal(statsProvider.calls.length, 0);
+  assert.match(lastResponse(interaction).payload.content, /not authorized/i);
+});
+
+test('a configured COMMAND_GUILD_ID rejects interactions from a different guild', async () => {
+  const statsProvider = makeStatsProvider();
+  const { manager } = makeManager({
+    config: { commandGuildId: 'expected-guild' },
+    managerOptions: { statsProvider },
+  });
+  const interaction = makeInteraction({ subcommand: 'stats' }); // guildId defaults to 'g1'
+
+  await manager.handleInteraction(interaction);
+
+  assert.equal(statsProvider.calls.length, 0);
+  assert.match(lastResponse(interaction).payload.content, /not available in this server/i);
+});
+
+test('a configured COMMAND_GUILD_ID allows the matching guild through', async () => {
+  const statsProvider = makeStatsProvider();
+  const { manager } = makeManager({
+    config: { commandGuildId: 'g1' },
+    managerOptions: { statsProvider },
+  });
+  const interaction = makeInteraction({ subcommand: 'stats' });
+
+  await manager.handleInteraction(interaction);
+
+  assert.equal(statsProvider.calls.length, 1);
+});
+
+test('/afk stats is cooled down per owner for a few seconds', async () => {
+  const statsProvider = makeStatsProvider();
+  const { manager } = makeManager({ managerOptions: { statsProvider, statsCooldownMs: 5_000 } });
+
+  await manager.handleInteraction(makeInteraction({ subcommand: 'stats' }));
+  const second = makeInteraction({ subcommand: 'stats' });
+  await manager.handleInteraction(second);
+
+  assert.equal(statsProvider.calls.length, 1);
+  assert.match(lastResponse(second).payload.content, /wait/i);
+});
+
+test('/afk stats never leaks the bot token or owner IDs', async () => {
+  const statsProvider = makeStatsProvider();
+  const { manager } = makeManager({
+    config: { ownerIds: ['owner'], botToken: 'BOT_TOKEN_SECRET' },
+    managerOptions: { statsProvider },
+  });
+  const interaction = makeInteraction({ subcommand: 'stats' });
+
+  await manager.handleInteraction(interaction);
+
+  assert.doesNotMatch(lastResponse(interaction).payload.content, /BOT_TOKEN_SECRET/);
+});
+
+test('a stats-provider failure becomes a safe ephemeral error, not a raw stack trace', async () => {
+  const statsProvider = { async collect() { throw new Error('disk read exploded: /secret/path'); } };
+  const logs = [];
+  const client = new (require('node:events').EventEmitter)();
+  client.ws = { ping: 1 };
+  client.user = { id: 'bot' };
+  client.isReady = () => true;
+  client.application = { commands: { async fetch() { return []; }, async set(c) { return c; } } };
+  client.guilds = { cache: new Map() };
+  const manager = new CommandManager(
+    client,
+    makeVoiceManager(),
+    { ownerIds: ['owner'], commandGuildId: null },
+    { logger: { error: (m) => logs.push(m) }, statsProvider }
+  );
+  const interaction = makeInteraction({ subcommand: 'stats' });
+
+  await manager.handleInteraction(interaction);
+
+  const content = lastResponse(interaction).payload.content;
+  assert.match(content, /Command failed|Failed to collect/i);
+  assert.doesNotMatch(content, /secret/i);
+});
+
+test('a long port/process list truncates safely within the Discord response budget', () => {
+  const manyPorts = Array.from({ length: 40 }, (_, i) => ({
+    protocol: 'tcp',
+    localAddress: '0.0.0.0',
+    port: String(3000 + i),
+    state: 'LISTEN',
+    process: 'node',
+  }));
+  const manyProcesses = Array.from({ length: 60 }, (_, i) => ({
+    pid: i + 1,
+    cpuPercent: 1.2,
+    memPercent: 0.8,
+    name: 'proc' + i,
+  }));
+  const stats = {
+    system: {
+      hostname: null,
+      hostnameOmitted: true,
+      platform: 'linux',
+      release: 'test',
+      nodeVersion: process.version,
+      uptimeSeconds: 10,
+      cpuCount: 4,
+      cpuUtilizationPercent: 1,
+      loadAverage: [0, 0, 0],
+      memory: { totalBytes: 1, usedBytes: 1, freeBytes: 0 },
+      swap: null,
+      disk: { totalBytes: 1, usedBytes: 1, availableBytes: 0, unavailableReason: null },
+    },
+    ports: { available: true, reason: null, entries: manyPorts, truncatedCount: 5, establishedCount: 0 },
+    processes: { available: true, reason: null, entries: manyProcesses, truncatedCount: 0, totalCount: 60 },
+  };
+  const localafk = {
+    pid: 1,
+    memory: { rss: 1, heapUsed: 1 },
+    uptimeSeconds: 1,
+    gatewayPing: '1 ms',
+    voice: { state: 'idle' },
+  };
+
+  const content = formatStats(stats, localafk);
+
+  assert.ok(content.length <= 1_900);
+  assert.match(content, /more\./);
+});
+
+test('/afk stats does not crash on a non-Linux platform and reports sections as unavailable', async () => {
+  const statsProvider = new StatsProvider({ platform: 'win32', sleep: async () => {} });
+  const { manager } = makeManager({ managerOptions: { statsProvider } });
+  const interaction = makeInteraction({ subcommand: 'stats' });
+
+  await manager.handleInteraction(interaction);
+
+  const content = lastResponse(interaction).payload.content;
+  assert.match(content, /\*\*SYSTEM\*\*/);
+  assert.match(content, /Unavailable on this platform/);
 });

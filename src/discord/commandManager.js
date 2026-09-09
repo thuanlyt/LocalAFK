@@ -2,9 +2,13 @@ const {
   ChannelType,
   SlashCommandBuilder,
 } = require('discord.js');
+const { StatsProvider } = require('../system/statsProvider');
 
 const ROOT_COMMAND = 'afk';
 const MAX_RESPONSE_LENGTH = 1_900;
+const DEFAULT_STATS_COOLDOWN_MS = 5_000;
+const DEFAULT_PORT_ROWS = 15;
+const DEFAULT_PROCESS_ROWS = 10;
 
 class CommandError extends Error {
   constructor(userMessage) {
@@ -66,6 +70,9 @@ function buildCommandSchema() {
     )
     .addSubcommand((subcommand) =>
       subcommand.setName('diagnostics').setDescription('Show a safe operational diagnostics snapshot')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName('stats').setDescription('Show read-only VPS/host system statistics')
     )
     .toJSON()];
 }
@@ -143,6 +150,29 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
+function formatScaledBytes(bytes) {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return 'n/a';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return value.toFixed(1) + ' ' + units[unitIndex];
+}
+
+function formatUsageLine(usage) {
+  if (!usage || usage.totalBytes === null || usage.totalBytes === undefined) return 'n/a';
+  const percent = usage.totalBytes ? ((usage.usedBytes / usage.totalBytes) * 100).toFixed(1) : '0.0';
+  return formatScaledBytes(usage.usedBytes) + ' / ' + formatScaledBytes(usage.totalBytes) + ' (' + percent + '%)';
+}
+
+function padRight(value, width) {
+  const str = String(value);
+  return str.length >= width ? str + ' ' : str + ' '.repeat(width - str.length);
+}
+
 function truncateResponse(content) {
   if (content.length <= MAX_RESPONSE_LENGTH) return content;
   return content.slice(0, MAX_RESPONSE_LENGTH - 30) + '\n… response truncated';
@@ -188,6 +218,139 @@ function formatMembers(members) {
   return output;
 }
 
+function formatSystemSection(system) {
+  const lines = ['**SYSTEM**'];
+  if (system.hostname) lines.push('Hostname: ' + system.hostname);
+  else if (system.hostnameOmitted) lines.push('Hostname: (omitted)');
+  lines.push('Platform: ' + system.platform + ' ' + system.release);
+  lines.push('Node: ' + system.nodeVersion);
+  lines.push('Uptime: ' + formatDuration(system.uptimeSeconds * 1_000));
+  lines.push('CPU cores: ' + system.cpuCount);
+  lines.push(
+    'CPU utilization: ' +
+      (system.cpuUtilizationPercent === null || system.cpuUtilizationPercent === undefined
+        ? 'n/a'
+        : system.cpuUtilizationPercent.toFixed(1) + '%')
+  );
+  lines.push(
+    'Load average (1/5/15): ' +
+      (system.loadAverage ? system.loadAverage.map((n) => n.toFixed(2)).join(' / ') : 'n/a')
+  );
+  lines.push('RAM: ' + formatUsageLine(system.memory));
+  lines.push('Swap: ' + (system.swap ? formatUsageLine(system.swap) : 'n/a'));
+  lines.push(
+    'Disk (root): ' +
+      (system.disk && system.disk.totalBytes !== null
+        ? formatUsageLine(system.disk)
+        : 'unavailable (' + (system.disk?.unavailableReason || 'unknown') + ')')
+  );
+  return lines.join('\n');
+}
+
+function formatLocalafkSection(localafk) {
+  const voice = localafk.voice || {};
+  const voiceTarget = voice.channelId
+    ? (voice.guildName || voice.guildId || 'unknown guild') + ' / ' + (voice.channelName || voice.channelId)
+    : 'none';
+  return [
+    '**LOCALAFK**',
+    'PID: ' + localafk.pid,
+    'RSS: ' + formatBytes(localafk.memory.rss),
+    'Heap used: ' + formatBytes(localafk.memory.heapUsed),
+    'Process uptime: ' + formatDuration(localafk.uptimeSeconds * 1_000),
+    'Gateway ping: ' + localafk.gatewayPing,
+    'Voice: ' + (voice.state || 'idle') + ' (' + voiceTarget + ')',
+  ].join('\n');
+}
+
+function formatPortsSection(ports, maxRows) {
+  const lines = ['**PORTS**'];
+  if (!ports.available) {
+    lines.push(ports.reason || 'Unavailable on this platform.');
+    return lines.join('\n');
+  }
+  const shown = ports.entries.slice(0, Math.max(0, maxRows));
+  if (!shown.length) {
+    lines.push(maxRows <= 0 ? '(rows omitted to fit response size)' : 'No listening ports detected.');
+  } else {
+    lines.push('```');
+    lines.push('PROTO  BIND             PORT   STATE   PROCESS');
+    for (const entry of shown) {
+      lines.push(
+        padRight(entry.protocol, 7) +
+          padRight(entry.localAddress, 17) +
+          padRight(entry.port, 7) +
+          padRight(entry.state, 8) +
+          entry.process
+      );
+    }
+    lines.push('```');
+  }
+  const remaining = ports.entries.length - shown.length + ports.truncatedCount;
+  if (remaining > 0) lines.push('… and ' + remaining + ' more.');
+  if (ports.establishedCount !== null && ports.establishedCount !== undefined) {
+    lines.push('Established connections: ' + ports.establishedCount);
+  }
+  return lines.join('\n');
+}
+
+function formatProcessesSection(processes, maxRows) {
+  const lines = ['**PROCESSES**'];
+  if (!processes.available) {
+    lines.push(processes.reason || 'Unavailable on this platform.');
+    return lines.join('\n');
+  }
+  const shown = processes.entries.slice(0, Math.max(0, maxRows));
+  if (!shown.length) {
+    lines.push(maxRows <= 0 ? '(rows omitted to fit response size)' : 'No process data available.');
+  } else {
+    lines.push('```');
+    lines.push('PID     CPU%   MEM%   NAME');
+    for (const proc of shown) {
+      lines.push(
+        padRight(proc.pid, 8) + padRight(proc.cpuPercent.toFixed(1), 7) + padRight(proc.memPercent.toFixed(1), 7) + proc.name
+      );
+    }
+    lines.push('```');
+  }
+  const shownTotal = processes.entries.length - shown.length + processes.truncatedCount;
+  if (shownTotal > 0) lines.push('… and ' + shownTotal + ' more.');
+  if (processes.totalCount !== null && processes.totalCount !== undefined) {
+    lines.push('Total processes: ' + processes.totalCount);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Renders the full /afk stats response within MAX_RESPONSE_LENGTH. Priority order when the
+ * content doesn't fit: system summary, then LocalAFK, then listening ports, then top
+ * processes — so rows are trimmed from processes first, then ports, never silently
+ * mid-cutting a section.
+ */
+function formatStats(stats, localafk) {
+  const system = formatSystemSection(stats.system);
+  const localafkSection = formatLocalafkSection(localafk);
+  const fixedLength = system.length + localafkSection.length + 16;
+
+  let portRows = Math.min(stats.ports.entries.length, DEFAULT_PORT_ROWS);
+  let processRows = Math.min(stats.processes.entries.length, DEFAULT_PROCESS_ROWS);
+  let ports = formatPortsSection(stats.ports, portRows);
+  let processes = formatProcessesSection(stats.processes, processRows);
+
+  const budget = MAX_RESPONSE_LENGTH - fixedLength - 16;
+  while (ports.length + processes.length > Math.max(budget, 0) && (processRows > 0 || portRows > 0)) {
+    if (processRows > 0) {
+      processRows -= 1;
+      processes = formatProcessesSection(stats.processes, processRows);
+    } else {
+      portRows -= 1;
+      ports = formatPortsSection(stats.ports, portRows);
+    }
+  }
+
+  return truncateResponse([system, localafkSection, ports, processes].join('\n\n'));
+}
+
 class CommandManager {
   constructor(client, voiceManager, config, options = {}) {
     this.client = client;
@@ -195,6 +358,9 @@ class CommandManager {
     this.config = config;
     this.logger = options.logger || console;
     this.commandSchema = options.commandSchema || buildCommandSchema();
+    this.statsProvider = options.statsProvider || new StatsProvider({ showHostname: config.statsShowHostname });
+    this.statsCooldownMs = options.statsCooldownMs ?? DEFAULT_STATS_COOLDOWN_MS;
+    this.statsCooldowns = new Map();
     this.lastSync = null;
     this.boundInteractionHandler = (interaction) => {
       if (typeof interaction.isChatInputCommand === 'function' && !interaction.isChatInputCommand()) {
@@ -304,6 +470,9 @@ class CommandManager {
     if (!this.isOwner(interaction.user?.id)) {
       return this.replyEphemeral(interaction, '❌ You are not authorized to control this bot.');
     }
+    if (this.config.commandGuildId && interaction.guildId !== this.config.commandGuildId) {
+      return this.replyEphemeral(interaction, '❌ This command is not available in this server.');
+    }
 
     try {
       if (
@@ -342,8 +511,38 @@ class CommandManager {
     }
     if (subcommand === 'status') return this.formatOverallStatus();
     if (subcommand === 'diagnostics') return this.formatDiagnostics();
+    if (subcommand === 'stats') return this.dispatchStats(interaction);
 
     throw new CommandError('Unknown /afk command.');
+  }
+
+  async dispatchStats(interaction) {
+    const ownerId = interaction.user?.id;
+    const now = Date.now();
+    const lastRun = this.statsCooldowns.get(ownerId);
+    if (lastRun !== undefined && now - lastRun < this.statsCooldownMs) {
+      const remainingMs = this.statsCooldownMs - (now - lastRun);
+      return '⏳ Please wait ' + Math.ceil(remainingMs / 1_000) + 's before running /afk stats again.';
+    }
+    this.statsCooldowns.set(ownerId, now);
+
+    let stats;
+    try {
+      stats = await this.statsProvider.collect();
+    } catch (error) {
+      this.logError(error);
+      throw new CommandError('Failed to collect host statistics.');
+    }
+
+    const voice = this.voiceManager.status();
+    const localafk = {
+      pid: process.pid,
+      memory: process.memoryUsage(),
+      uptimeSeconds: process.uptime(),
+      gatewayPing: gatewayPing(this.client),
+      voice,
+    };
+    return formatStats(stats, localafk);
   }
 
   async dispatchVoice(interaction, subcommand) {
@@ -476,6 +675,9 @@ module.exports = {
   commandSchemasEqual,
   formatDuration,
   formatMembers,
+  formatStats,
+  formatPortsSection,
+  formatProcessesSection,
   normalizeCommand,
   normalizeCommands,
 };

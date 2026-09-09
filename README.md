@@ -73,6 +73,7 @@ For long-running use, run the Node process under the operating system's process 
 - Generation-guarded voice lifecycle with bounded reconnect backoff.
 - Atomic, recoverable persistence of desiredVoice.
 - Safe diagnostics for Node version, uptime, memory, gateway ping, guild count, voice state, and command sync state.
+- Read-only host/VPS statistics (`/afk stats`): CPU, RAM, swap, disk, listening ports, and top processes — no SSH required.
 - Native Node.js environment-file loading; no runtime configuration dependency beyond Node.js and npm.
 
 ## Architecture
@@ -140,8 +141,9 @@ npm run dev
 | --- | --- | --- |
 | BOT_TOKEN | Yes | Discord bot token. Treat it as a password. |
 | OWNER_DISCORD_IDS | Yes | Comma-separated Discord user IDs authorized to run /afk. |
-| COMMAND_GUILD_ID | No | Register commands in this one guild. Empty means global registration. |
+| COMMAND_GUILD_ID | No | Register commands in this one guild. Empty means global registration. When set, `/afk` also rejects any interaction from a different guild at execution time, independent of registration scope. |
 | DATA_DIR | No | Directory for state.json. Defaults to ./data. |
+| STATS_SHOW_HOSTNAME | No | Set to `true` to include the OS hostname in `/afk stats`. Defaults to omitted, since a self-chosen hostname can be identifying/private. |
 
 The application requires both BOT_TOKEN and at least one owner ID. COMMAND_GUILD_ID is useful during development because guild commands update quickly; global command propagation can take longer.
 
@@ -163,8 +165,20 @@ All /afk commands are owner-only. Authorization is checked at runtime against in
 | /afk ping | Show gateway ping and process uptime. |
 | /afk status | Show compact bot, gateway, voice, target, and command-scope status. |
 | /afk diagnostics | Show a safe operational snapshot without tokens, secrets, owner IDs, or private paths. |
+| /afk stats | Show read-only host/VPS system statistics: CPU, RAM, swap, disk, listening ports, and top processes. |
 
 Control and diagnostic responses are ephemeral. Voice command handlers call the public VoiceManager API; they do not duplicate voice lifecycle logic.
+
+### /afk stats
+
+`/afk stats` lets the owner observe VPS/host health directly from Discord, without SSH. It is:
+
+- **read-only** — it never execs a shell, never accepts arbitrary commands, and cannot kill/restart/reboot anything or edit any file;
+- **owner-only and ephemeral**, like every other `/afk` command, and additionally guild-scoped when `COMMAND_GUILD_ID` is configured;
+- **rate-limited** — at most one run every 5 seconds per owner, to avoid needlessly repeated `ps`/`ss` calls;
+- **redacted by design** — no remote peer IP is ever shown (only an "Established connections: N" count), no process argv/environment/cwd is shown (only pid, CPU%, MEM%, and executable name), and the OS hostname is omitted unless `STATS_SHOW_HOSTNAME=true` is explicitly set.
+
+It does not open an HTTP port, start a monitoring server, or add a web dashboard — Discord remains the only control plane. On Linux it reads `/proc`, `os` built-ins, and the fixed, argument-locked `ps`/`ss` executables via `execFile` (never a shell string); on other platforms (including Windows) the ports/processes sections report "Unavailable on this platform" instead of guessing or crashing, while CPU/RAM/disk/LocalAFK-process stats remain available everywhere `fs.statfs`/`os` support them.
 
 ### Command registration
 
@@ -248,7 +262,8 @@ The tests cover:
 - guild/global command registration;
 - stable command-schema comparison and startup no-op behavior;
 - VoiceManager generation lifecycle and reconnect regression cases;
-- StateStore atomic persistence, overlapping snapshots, queue recovery, malformed JSON, and temporary-file cleanup.
+- StateStore atomic persistence, overlapping snapshots, queue recovery, malformed JSON, and temporary-file cleanup;
+- /afk stats authorization (owner/guild/cooldown), redaction (no remote IPs, no argv/env), safe degradation when `ss`/`ps` are missing or the platform isn't Linux, and response-size truncation.
 
 Additional checks:
 
@@ -272,9 +287,11 @@ src/
     silenceStream.js          Silent Opus frame stream
     voiceManager.js           Persistent voice lifecycle
   store/stateStore.js         Atomic JSON persistence
+  system/statsProvider.js     Read-only host/VPS statistics (CPU, RAM, disk, ports, processes)
 test/
   commandManager.test.js
   stateStore.test.js
+  statsProvider.test.js
   voiceManager.test.js
 audit/                         Historical review and completion reports
 ~~~
