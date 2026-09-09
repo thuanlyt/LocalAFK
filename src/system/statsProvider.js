@@ -11,6 +11,12 @@ const DEFAULT_EXEC_TIMEOUT_MS = 2_000;
 const DEFAULT_EXEC_MAX_BUFFER = 1024 * 1024; // 1 MB — these are short, line-oriented outputs.
 const DEFAULT_PORT_LIMIT = 15;
 const DEFAULT_PROCESS_LIMIT = 8;
+// Fixed, root-owned helper that runs exactly `ss -H -lntup` with no arguments accepted from
+// this process — see audit/ for the sudoers design. Only ever invoked via `sudo -n <path>`,
+// never a shell string. If it isn't installed/configured, we fall back to a plain, unprivileged
+// `ss` call (which may report `unknown` for sockets owned by other users) — never a crash.
+const DEFAULT_PORTS_HELPER_PATH = '/usr/local/libexec/localafk-portstats';
+const DEFAULT_SUDO_PATH = '/usr/bin/sudo';
 
 /**
  * Host/VPS-level, read-only statistics. Deliberately Discord-agnostic (no client, no
@@ -34,6 +40,9 @@ class StatsProvider {
     this.processLimit = options.processLimit ?? DEFAULT_PROCESS_LIMIT;
     this.showHostname = Boolean(options.showHostname);
     this.sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.portsHelperPath = options.portsHelperPath ?? DEFAULT_PORTS_HELPER_PATH;
+    this.sudoPath = options.sudoPath ?? DEFAULT_SUDO_PATH;
+    this.enablePortsHelper = options.enablePortsHelper ?? true;
   }
 
   async collect() {
@@ -131,31 +140,44 @@ class StatsProvider {
     }
   }
 
-  // ---- PORTS (Linux only: `ss`) ----
+  // ---- PORTS (Linux only: `ss`, optionally via a narrowly-scoped root helper) ----
 
   async collectPorts() {
     if (this.platform !== 'linux') {
-      return { available: false, reason: 'Unavailable on this platform', entries: [], truncatedCount: 0, establishedCount: null };
+      return { available: false, reason: 'Unavailable on this platform', entries: [], truncatedCount: 0 };
     }
 
     let stdout;
-    try {
-      ({ stdout } = await this.execFile('ss', ['-H', '-t', '-u', '-n', '-a', '-p'], {
-        timeout: this.execTimeoutMs,
-        maxBuffer: this.execMaxBuffer,
-      }));
-    } catch (err) {
-      const reason = err.code === 'ENOENT' ? '`ss` is not installed on this host.' : `\`ss\` failed: ${err.message}`;
-      return { available: false, reason, entries: [], truncatedCount: 0, establishedCount: null };
+    if (this.enablePortsHelper) {
+      try {
+        ({ stdout } = await this.execFile(this.sudoPath, ['-n', this.portsHelperPath], {
+          timeout: this.execTimeoutMs,
+          maxBuffer: this.execMaxBuffer,
+        }));
+      } catch {
+        stdout = undefined; // helper not installed/configured yet — fall through to plain ss below
+      }
+    }
+
+    if (stdout === undefined) {
+      try {
+        ({ stdout } = await this.execFile('ss', ['-H', '-l', '-n', '-t', '-u', '-p'], {
+          timeout: this.execTimeoutMs,
+          maxBuffer: this.execMaxBuffer,
+        }));
+      } catch (err) {
+        const reason = err.code === 'ENOENT' ? '`ss` is not installed on this host.' : `\`ss\` failed: ${err.message}`;
+        return { available: false, reason, entries: [], truncatedCount: 0 };
+      }
     }
 
     const listening = [];
-    let establishedCount = 0;
     for (const line of stdout.split('\n')) {
       const parsed = parseSsLine(line);
-      if (!parsed) continue;
-      if (parsed.state === 'LISTEN' || parsed.state === 'UNCONN') listening.push(parsed);
-      else if (parsed.state === 'ESTAB') establishedCount += 1;
+      // Defense in depth: only ever keep listening-style rows, regardless of exactly which
+      // flags produced this output, so an established connection's local/remote pair can
+      // never end up rendered as if it were a listening socket.
+      if (parsed && (parsed.state === 'LISTEN' || parsed.state === 'UNCONN')) listening.push(parsed);
     }
 
     const entries = listening.slice(0, this.portLimit);
@@ -164,7 +186,6 @@ class StatsProvider {
       reason: null,
       entries,
       truncatedCount: Math.max(0, listening.length - entries.length),
-      establishedCount,
     };
   }
 
@@ -205,8 +226,9 @@ class StatsProvider {
 }
 
 /**
- * Parses one `ss -H -t -u -n -a -p` line. Never includes the remote address — only
- * protocol, local bind/port, state, and (when visible) the owning process name.
+ * Parses one `ss -H -l -n -t -u -p` (or the helper's equivalent `ss -H -lntup`) line. Never
+ * includes the remote address — only protocol, local bind/port, state, and (when visible) the
+ * owning PID/process name.
  * Example line:
  *   tcp   LISTEN 0      128        0.0.0.0:22        0.0.0.0:*     users:(("sshd",pid=123,fd=3))
  */
@@ -223,14 +245,16 @@ function parseSsLine(line) {
   const bind = localAddress.slice(0, lastColon) || '*';
   const port = localAddress.slice(lastColon + 1);
 
-  const processMatch = /users:\(\("([^"]+)"/.exec(trimmed);
+  const processMatch = /users:\(\("([^"]+)",pid=(\d+)/.exec(trimmed);
   const processName = processMatch ? processMatch[1] : 'unknown';
+  const pid = processMatch ? Number(processMatch[2]) : null;
 
   return {
     protocol: protocol.toLowerCase(),
     localAddress: bind,
     port,
     state: state.toUpperCase(),
+    pid,
     process: processName,
   };
 }

@@ -99,20 +99,22 @@ test('swap is null on non-Linux platforms and never reads /proc', async () => {
   assert.equal(readCalled, false);
 });
 
-test('parseSsLine extracts protocol/bind/port/state/process without the remote address', () => {
+test('parseSsLine extracts protocol/bind/port/state/pid/process without the remote address', () => {
   const line = 'tcp    LISTEN  0      128    0.0.0.0:22        0.0.0.0:*     users:(("sshd",pid=111,fd=3))';
   const parsed = parseSsLine(line);
   assert.equal(parsed.protocol, 'tcp');
   assert.equal(parsed.localAddress, '0.0.0.0');
   assert.equal(parsed.port, '22');
   assert.equal(parsed.state, 'LISTEN');
+  assert.equal(parsed.pid, 111);
   assert.equal(parsed.process, 'sshd');
 });
 
-test('parseSsLine falls back to unknown when process info is not visible', () => {
+test('parseSsLine falls back to unknown/null when process info is not visible (unprivileged ss)', () => {
   const line = 'tcp    LISTEN  0      128    127.0.0.1:3000     0.0.0.0:*';
   const parsed = parseSsLine(line);
   assert.equal(parsed.process, 'unknown');
+  assert.equal(parsed.pid, null);
 });
 
 test('parsePsLine only extracts pid/cpu/mem/comm, never full argv', () => {
@@ -120,28 +122,87 @@ test('parsePsLine only extracts pid/cpu/mem/comm, never full argv', () => {
   assert.deepEqual(parsed, { pid: 123, cpuPercent: 12.3, memPercent: 4.5, name: 'node' });
 });
 
-test('collectPorts never surfaces a remote peer address, only counts established connections', async () => {
+test('collectPorts never surfaces a remote peer address, and drops non-listening rows', async () => {
   const sample = [
     'tcp   LISTEN 0 128    0.0.0.0:22         0.0.0.0:*     users:(("sshd",pid=1,fd=3))',
     'tcp   ESTAB  0 0      10.0.0.5:22        203.0.113.77:54321 users:(("sshd",pid=2,fd=4))',
     'udp   UNCONN 0 0      0.0.0.0:53         0.0.0.0:*     users:(("systemd-resolve",pid=3,fd=5))',
   ].join('\n');
-  const provider = new StatsProvider({ platform: 'linux', execFile: async () => ({ stdout: sample }) });
+  const provider = new StatsProvider({
+    platform: 'linux',
+    enablePortsHelper: false,
+    execFile: async () => ({ stdout: sample }),
+  });
 
   const ports = await provider.collectPorts();
   assert.equal(ports.available, true);
-  assert.equal(ports.establishedCount, 1);
+  assert.equal(ports.entries.length, 2); // LISTEN + UNCONN kept, ESTAB dropped
   assert.ok(ports.entries.some((entry) => entry.port === '22' && entry.state === 'LISTEN'));
+  assert.ok(!ports.entries.some((entry) => entry.state === 'ESTAB'));
   assert.doesNotMatch(JSON.stringify(ports), /203\.0\.113\.77/);
 });
 
 test('collectPorts degrades gracefully when ss is missing, instead of throwing', async () => {
   const missing = Object.assign(new Error('not found'), { code: 'ENOENT' });
-  const provider = new StatsProvider({ platform: 'linux', execFile: async () => { throw missing; } });
+  const provider = new StatsProvider({ platform: 'linux', enablePortsHelper: false, execFile: async () => { throw missing; } });
 
   const ports = await provider.collectPorts();
   assert.equal(ports.available, false);
   assert.match(ports.reason, /ss/);
+});
+
+test('collectPorts uses the privileged helper via sudo -n when it succeeds, and never runs plain ss', async () => {
+  const calls = [];
+  const provider = new StatsProvider({
+    platform: 'linux',
+    sudoPath: '/usr/bin/sudo',
+    portsHelperPath: '/usr/local/libexec/localafk-portstats',
+    execFile: async (bin, args) => {
+      calls.push([bin, args]);
+      return { stdout: 'tcp LISTEN 0 1 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=42,fd=1))' };
+    },
+  });
+
+  const ports = await provider.collectPorts();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], '/usr/bin/sudo');
+  assert.deepEqual(calls[0][1], ['-n', '/usr/local/libexec/localafk-portstats']);
+  assert.equal(ports.entries[0].pid, 42);
+});
+
+test('collectPorts falls back to plain ss when the privileged helper is unavailable', async () => {
+  const calls = [];
+  const provider = new StatsProvider({
+    platform: 'linux',
+    execFile: async (bin, args) => {
+      calls.push(bin);
+      if (bin === '/usr/bin/sudo') {
+        const err = Object.assign(new Error('sudo: a password is required'), { code: 1 });
+        throw err;
+      }
+      return { stdout: 'tcp LISTEN 0 1 0.0.0.0:22 0.0.0.0:* users:()' };
+    },
+  });
+
+  const ports = await provider.collectPorts();
+  assert.deepEqual(calls, ['/usr/bin/sudo', 'ss']);
+  assert.equal(ports.available, true);
+  assert.equal(ports.entries[0].process, 'unknown');
+});
+
+test('collectPorts skips the helper entirely when enablePortsHelper is false', async () => {
+  const calls = [];
+  const provider = new StatsProvider({
+    platform: 'linux',
+    enablePortsHelper: false,
+    execFile: async (bin) => {
+      calls.push(bin);
+      return { stdout: '' };
+    },
+  });
+
+  await provider.collectPorts();
+  assert.deepEqual(calls, ['ss']);
 });
 
 test('collectProcesses limits rows and reports totalCount/truncatedCount', async () => {
@@ -190,6 +251,7 @@ test('hostname is omitted by default and only included when explicitly enabled',
 test('collect() aggregates system/ports/processes on a fully-stubbed Linux host', async () => {
   const provider = new StatsProvider({
     platform: 'linux',
+    enablePortsHelper: false,
     os: makeOsStub(),
     fs: {
       statfs: async () => ({ bsize: 4096, blocks: 100, bfree: 50, bavail: 45 }),
